@@ -1,0 +1,404 @@
+{
+  "env": {
+    "KIMI_API_KEY": "<YOUR_KIMI_API_KEY>",
+    "OPENCLAW_EXEC_SHELL": "cmd.exe"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "kimi": {
+        "baseUrl": "https://api.kimi.com/coding/",
+        "api": "anthropic-messages",
+        "apiKey": "<YOUR_APIKEY>",
+        "headers": {
+          "User-Agent": "claude-code/0.1.0"
+        },
+        "models": [
+          {
+            "id": "auto",
+            "name": "Auto (router)",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 32768
+          },
+          {
+            "id": "k3",
+            "name": "Kimi K3",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 32768
+          },
+          {
+            "id": "kimi-for-coding",
+            "name": "Kimi K2.7 Coding",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 262144,
+            "maxTokens": 32768
+          },
+          {
+            "id": "kimi-for-coding-highspeed",
+            "name": "Kimi K2.7 Highspeed",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 262144,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "kimi/auto",
+        "fallbacks": [
+          "kimi/k3",
+          "kimi/kimi-for-coding-highspeed"
+        ]
+      },
+      "models": {
+        "kimi/k3": {
+          "alias": "K3"
+        },
+        "kimi/kimi-for-coding": {
+          "alias": "Kimi"
+        },
+        "kimi/kimi-for-coding-highspeed": {
+          "alias": "KimiFast"
+        },
+        "kimi/auto": {
+          "alias": "Auto"
+        }
+      },
+      "workspace": "C:\\Users\\ericc\\.openclaw\\workspace",
+      "verboseDefault": "full"
+    }
+  },
+  "plugins": {
+    "allow": [
+      "kimi",
+      "acpx",
+      "discord",
+      "memory-core"
+    ],
+    "entries": {
+      "kimi": {
+        "enabled": true,
+        "config": {}
+      },
+      "memory-core": {
+        "config": {}
+      },
+      "discord": {
+        "enabled": true
+      },
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-reads",
+          "nonInteractivePermissions": "deny",
+          "timeoutSeconds": 120
+        }
+      }
+    },
+    "bundledDiscovery": "compat"
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.7.1",
+    "lastTouchedAt": "2026-07-18T19:21:33.213Z"
+  },
+  "wizard": {
+    "securityAcknowledgedAt": "2026-07-17T16:05:21.730Z",
+    "lastRunAt": "2026-07-18T16:53:08.813Z",
+    "lastRunVersion": "2026.7.1-2",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "<YOUR_TOKEN>"
+    },
+    "port": 18789,
+    "bind": "loopback",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "controlUi": {
+      "allowInsecureAuth": true
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send",
+        "sms.search"
+      ]
+    },
+    "reload": {
+      "mode": "hot"
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer",
+    "threadBindings": {
+      "enabled": true
+    }
+  },
+  "tools": {
+    "profile": "coding",
+    "exec": {
+      "host": "gateway",
+      "strictInlineEval": true,
+      "commandHighlighting": true,
+      "security": "full",
+      "ask": "off"
+    },
+    "deny": [
+      "write",
+      "edit",
+      "apply_patch"
+    ],
+    "media": {
+      "audio": {
+        "enabled": true,
+        "scope": {
+          "default": "allow"
+        },
+        "models": [
+          {
+            "type": "cli",
+            "command": "C:/Users/ericc/.openclaw/whisper/whisper-cli.cmd",
+            "args": [
+              "-otxt",
+              "-of",
+              "{{MediaPath}}",
+              "-np",
+              "{{MediaPath}}"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    },
+    "entries": {
+      "coding-agent": {
+        "enabled": true
+      },
+      "1password": {
+        "enabled": false
+      },
+      "blogwatcher": {
+        "enabled": false
+      },
+      "blucli": {
+        "enabled": false
+      },
+      "camsnap": {
+        "enabled": false
+      },
+      "eightctl": {
+        "enabled": false
+      },
+      "gemini": {
+        "enabled": false
+      },
+      "gifgrep": {
+        "enabled": false
+      },
+      "gog": {
+        "enabled": false
+      },
+      "goplaces": {
+        "enabled": false
+      },
+      "himalaya": {
+        "enabled": false
+      },
+      "mcporter": {
+        "enabled": false
+      },
+      "obsidian": {
+        "enabled": false
+      },
+      "openai-whisper": {
+        "enabled": true
+      },
+      "openhue": {
+        "enabled": false
+      },
+      "oracle": {
+        "enabled": false
+      },
+      "ordercli": {
+        "enabled": false
+      },
+      "sag": {
+        "enabled": false
+      },
+      "session-logs": {
+        "enabled": false
+      },
+      "sherpa-onnx-tts": {
+        "enabled": true
+      },
+      "songsee": {
+        "enabled": false
+      },
+      "sonoscli": {
+        "enabled": false
+      },
+      "spotify-player": {
+        "enabled": false
+      },
+      "summarize": {
+        "enabled": false
+      },
+      "trello": {
+        "enabled": false
+      },
+      "xurl": {
+        "enabled": false
+      }
+    }
+  },
+  "hooks": {
+    "internal": {
+      "entries": {
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "playwright": {
+        "command": "C:\\Program Files\\nodejs\\node.exe",
+        "args": [
+          "C:\\Users\\ericc\\AppData\\Roaming\\npm\\node_modules\\@playwright\\mcp\\cli.js"
+        ],
+        "connectTimeout": 120,
+        "timeout": 60,
+        "toolFilter": {
+          "exclude": [
+            "browser_run_code_unsafe"
+          ]
+        }
+      }
+    }
+  },
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": {
+        "source": "env",
+        "provider": "default",
+        "id": "DISCORD_BOT_TOKEN"
+      },
+      "allowFrom": [
+        "662339124627374100",
+        "901676858322595862"
+      ],
+      "proxy": "http://127.0.0.1:7994",
+      "execApprovals": {
+        "enabled": true,
+        "approvers": [
+          "662339124627374100"
+        ],
+        "cleanupAfterResolve": true,
+        "target": "channel"
+      },
+      "threadBindings": {
+        "enabled": true
+      },
+      "autoPresence": {
+        "enabled": false
+      },
+      "groupPolicy": "open"
+    }
+  },
+  "proxy": {
+    "enabled": true,
+    "proxyUrl": "http://127.0.0.1:7994"
+  },
+  "messages": {
+    "ackReaction": "👀",
+    "ackReactionScope": "group-mentions",
+    "removeAckAfterReply": false,
+    "statusReactions": {
+      "enabled": false,
+      "emojis": {
+        "queued": "👀",
+        "thinking": "🧠",
+        "tool": "🔧",
+        "done": "✅",
+        "error": "❌",
+        "stallSoft": "😐",
+        "stallHard": "😐"
+      }
+    },
+    "groupChat": {
+      "mentionPatterns": [
+        "\\bopenclaw\\b",
+        "\\bopen ?cl(aw|ock)\\b",
+        "\\bclaw\\b",
+        "\\b[cgk]l[au]n+[ck]er\\b",
+        "\\bosama\\b",
+        "\\bd?jerok\\w*",
+        "\\bj[ae]r(ek|ick|rick)\\b",
+        "\\bglanker\\b",
+        "\\bclunker\\b"
+      ]
+    }
+  }
+}

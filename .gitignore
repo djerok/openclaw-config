@@ -1,0 +1,27 @@
+# --- secrets: never commit these, ever ---
+.env
+*.env
+.credentials.json
+auth.json
+exec-approvals.json
+openclaw.json          # the REAL one (only openclaw.template.json is tracked)
+*secret*
+*token*.txt
+
+# --- large / build artifacts (whisper models + binaries are downloaded/built, not committed) ---
+*.bin
+*.exe
+*.dll
+*.so
+*.mmdb
+whisper/bin/
+whisper/gpu/
+whisper/__pycache__/
+
+# --- misc ---
+__pycache__/
+*.pyc
+node_modules/
+*.log
+logs/
+.DS_Store
