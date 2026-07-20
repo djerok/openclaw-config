@@ -1,43 +1,64 @@
-# OpenClaw + Kimi + Discord + ACP Harness — Full Setup Guide
+# OpenClaw + Discord — Full Setup Guide
 
-This is the end-to-end guide to rebuild the "clanker" Discord bot from scratch: an
-[OpenClaw](https://www.npmjs.com/package/openclaw) gateway whose chat brain is **Kimi K3**, reachable
-from **Discord** (through a China-blocked network via a VPN + proxy bridge), and able to spawn real
-**coding agents over ACP** (Claude Code and/or Codex).
+Build a Discord chat bot on an [OpenClaw](https://www.npmjs.com/package/openclaw) gateway. The bot's
+brain can be **any model provider** (Kimi, GLM/Z.ai, OpenAI, Anthropic, DeepSeek, a local model, …),
+and it can spawn real **coding agents over ACP** (Claude Code and/or Codex) that run on either an
+**API key** or a **subscription** (Anthropic Pro/Max, ChatGPT Plus/Pro). It works **with or without a
+proxy** — a proxy is only needed on networks that block Discord/OpenAI/Anthropic (e.g. mainland China).
+
+This guide is written to be reproducible on **any** machine, not one specific setup. Paths use `~`
+(on Windows that expands to `C:\Users\<you>`). Fill every `<PLACEHOLDER>` with your own value.
 
 Companion files in this folder:
-- **`openclaw.template.json`** — a redacted copy of the live `openclaw.json` (all secrets → `<PLACEHOLDER>`). Use it as your starting config.
+- **`openclaw.template.json`** — a redacted copy of a working `openclaw.json` (all secrets → placeholders). Your starting config.
 - **`COMMANDS.md`** — start/stop/restart cheat-sheet for the gateway + status board.
-- **`CHANGELOG.md`** — the dated history of every change (how we actually got here).
+- **`CHANGELOG.md`** — the dated history of the reference build (every fix and why).
+- **`whisper/`** — optional local speech-to-text (voice notes). See `whisper/WHISPER-SETUP.md`.
 
-> **Secrets rule:** never commit real tokens/keys. Everything below uses placeholders like
-> `<DISCORD_BOT_TOKEN>`. The real values live only in `~/.openclaw/.env` and `~/.openclaw/openclaw.json`
-> on the machine.
+> **Secrets rule:** never commit real tokens/keys. Everything below uses placeholders. Real values
+> live only in `~/.openclaw/.env`, `~/.openclaw/openclaw.json`, and the per-backend auth files on the
+> machine — all git-ignored.
+
+> **Platform note:** the reference build runs on **Windows** (gateway as a Scheduled Task, `pythonw`
+> for the bridge). OpenClaw itself is cross-platform — on macOS/Linux use a `launchd`/`systemd`/`pm2`
+> service instead of a Scheduled Task; the Python bridge, the CLIs, and every config file are the same.
+> Windows-only steps are marked **(Windows)**.
 
 ---
 
-## 0. Architecture (the whole pipeline, one hop at a time)
+## 0. Architecture — the whole pipeline
+
+There are **two independent brains** in this system; understanding the split is the key to the config:
 
 ```
-You type in Discord
-  → Discord servers
-  → UniClash VPN            (HTTP/SOCKS proxy on 127.0.0.1:7993 — this network blocks Discord + OpenAI/Anthropic direct)
-  → HTTP→SOCKS5h bridge     (127.0.0.1:7994 — because OpenClaw speaks ONLY HTTP proxy, not SOCKS)
-  → OpenClaw gateway (node) (Windows Scheduled Task, loopback API on 127.0.0.1:18789)
-       │
-       ├─ default @clanker chat  → Kimi brain plugin → https://api.kimi.com/coding/   (Kimi K3)
-       │
-       └─ /acp (a coding agent)  → acpx plugin → an ACP wrapper → a coding-agent CLI:
-              • agentId "claude" → @agentclientprotocol/claude-agent-acp → `claude` CLI → api.anthropic.com
-              • agentId "codex"  → @zed-industries/codex-acp           → `codex` CLI → api.openai.com
-  → response streams back up the same chain → bot posts in your channel
+                            ┌─────────────────────────────────────────────────────────┐
+You type in Discord ──▶ Discord ──▶ (proxy, ONLY if your network blocks Discord) ──▶   │
+                            │                                                            │
+                            ▼                                                            │
+                    OpenClaw gateway (node, loopback API 127.0.0.1:18789)               │
+                            │                                                            │
+      ┌─────────────────────┴───────────────────────────┐                              │
+      │ 1) CHAT BRAIN  (the @bot conversation)           │                              │
+      │    → one model provider via API KEY              │                              │
+      │      Kimi | GLM | OpenAI | Anthropic | …         │                              │
+      │                                                  │                              │
+      │ 2) CODING AGENTS  (/acp …)                       │                              │
+      │    → acpx plugin spawns a coding-agent CLI:      │                              │
+      │      • "claude" → Claude Code CLI  → Anthropic   │  ← API key  OR  subscription │
+      │      • "codex"  → Codex CLI        → OpenAI      │  ← API key  OR  subscription │
+      └──────────────────────────────────────────────────┘                              │
+                            │                                                            │
+                            ▼                                                            │
+                    response streams back up the same chain ─────────────────────────────┘
 ```
 
-**Why two proxy hops for one proxy:** UniClash (`7993`) resolves + tunnels correctly as **SOCKS5h**
-(proxy-side DNS beats this network's DNS poisoning). But OpenClaw only supports **HTTP** proxies
-("SOCKS and PAC proxy URLs are not supported"). So a tiny local bridge (`7994`) accepts HTTP-proxy
-`CONNECT` and forwards over SOCKS5h to UniClash. Discord traffic goes `OpenClaw → 7994 → 7993 → Discord`.
-Codex/OpenAI traffic goes directly `→ 7993` via the `HTTPS_PROXY` env var.
+- **Chat brain (1):** whatever you `@mention` the bot with is answered by a single model, defined by a
+  **provider block + API key** in `openclaw.json`. Any OpenAI- or Anthropic-compatible endpoint works.
+- **Coding agents (2):** `/acp` spawns a real coding-agent CLI. These can run on a **subscription**
+  (log the CLI in with your account over OAuth) **or** an **API key** — independently of the chat brain.
+
+You can mix freely: e.g. a cheap **GLM API key** for chat, plus a **Claude Max subscription** for the
+`/acp claude` coding agent.
 
 ---
 
@@ -45,371 +66,431 @@ Codex/OpenAI traffic goes directly `→ 7993` via the `HTTPS_PROXY` env var.
 
 | Need | Notes |
 |---|---|
-| **Node.js** | v25.9.0 was used. `node -v` must work in a plain shell. |
-| **Python 3** | On this PC **use `python3`, never bare `python`** (the bare `python` is a 0-byte WindowsApps stub that hangs). |
-| **UniClash** (or any VPN) | Provides the `127.0.0.1:7993` proxy. Needed because Discord/OpenAI/Anthropic are blocked direct. |
-| **A Discord bot** | Create at https://discord.com/developers → Bot → copy the token. Enable **Message Content Intent**. Invite it to your server. |
-| **Kimi coding key** | From **kimi.com/code** (NOT moonshot.ai — that returns 401 against the coding endpoint). |
-| **(optional) OpenAI API key** | `sk-proj-…` — only if you want the **Codex** ACP backend. |
-| **(optional) Anthropic** | For the **Claude Code** ACP backend (OAuth via `claude` CLI login, or an API key). |
+| **Node.js** | LTS or current. `node -v` must work in a plain shell. |
+| **Python 3** | Only needed for the optional proxy bridge and helper scripts. Use whatever command launches Python 3 on your system (on some Windows installs bare `python` is a broken stub — use `python3`). |
+| **A Discord bot** | Create at <https://discord.com/developers> → New Application → **Bot** → copy the token. Enable **Message Content Intent**. Invite it to your server (Part 4). |
+| **A brain** | Pick ONE of: an **API key** for any provider (Part 3A), a **Claude subscription** (3B), or a **Codex subscription** (3C). You can add more later. |
+| **A proxy** — *only if your network blocks Discord/OpenAI/Anthropic* (e.g. China) | Any VPN/proxy that can reach them. Not needed elsewhere. See Part 5. |
 
-Config lives in two homes:
-- **`C:\Users\ericc\.openclaw\`** — OpenClaw config, secrets, bridge, ACP wrappers, workspace.
-- **`C:\Users\ericc\.claude\`** — the `claude` CLI's own config (only relevant for the Claude ACP backend).
+Config lives in a few homes:
+- **`~/.openclaw/`** — OpenClaw config, secrets, the workspace, ACP wrappers, (optional) bridge.
+- **`~/.claude/`** — the `claude` CLI's own config (only for the Claude Code ACP backend).
+- **`~/.codex/`** and/or **`~/.openclaw/acpx/codex-home/`** — the `codex` CLI's config (Codex backend).
 
 ---
 
 ## 2. Install OpenClaw
 
-```powershell
-npm install -g openclaw            # installs to %APPDATA%\npm\node_modules\openclaw
+```bash
+npm install -g openclaw
 openclaw --version                 # confirm it runs
+openclaw                           # first-time wizard → scaffolds ~/.openclaw/openclaw.json + .env
 ```
 
-Run the first-time wizard (creates `~/.openclaw/openclaw.json` + `.env`):
-```powershell
-openclaw            # or: openclaw doctor
-```
-
-> **Known wall (important):** this install has a *stale-dist* bug — the long-running gateway executes
-> **old compiled bytecode** for any hand-edited `dist/*.js` file, even though the file on disk is
-> correct. **Config changes (openclaw.json / AGENTS.md) take effect; hand-patched code does not.** If a
-> code-level feature "won't turn on," this is why. A clean `npm` reinstall is the only known reset.
-> (Full detail in `CHANGELOG.md` under "stale Node compile cache DISPROVEN".)
+> **Known wall (important):** some installs have a *stale-dist* bug — the long-running gateway executes
+> **old compiled bytecode** for any hand-edited `dist/*.js` file, even when the file on disk is correct.
+> **Config changes (`openclaw.json`, workspace `*.md`) take effect; hand-patched program code does not.**
+> If a *code-level* feature won't turn on, this is why. A clean `npm` reinstall is the only known reset.
+> (Detail in `CHANGELOG.md`.) Everything in this guide is config- or file-based, so it is unaffected —
+> except a couple of clearly-marked optional code patches (voice).
 
 ---
 
-## 3. Kimi K3 as the chat brain
+## 3. Choose your brain / power source
 
-1. Get your key from **kimi.com/code** (a coding-subscription key, e.g. tier "Allegretto" → 1M context).
-2. Put it in `~/.openclaw/.env` (see Part 5) as `KIMI_API_KEY`.
-3. In `openclaw.json` the Kimi plugin points at the coding endpoint and declares the models:
-   ```jsonc
-   "plugins": { "entries": { "kimi": { "enabled": true, "config": {} } } },
-   "models": {
-     "...": "baseUrl -> https://api.kimi.com/coding/  (NOT moonshot; moonshot 401s)",
-     "model": "kimi/kimi-for-coding-highspeed"        // the default brain model
-   }
-   ```
-   Real model IDs served: `kimi-for-coding` (K2.7 Coding) and `kimi-for-coding-highspeed`.
+Do **at least one** of 3A / 3B / 3C. 3A powers the chat bot; 3B/3C power the `/acp` coding agents.
 
-> **Gotcha:** the Kimi endpoint **echoes any model id** — asking for "fable" or "opus" still serves
-> Kimi. So a `/model fable` that "works" is Kimi wearing a label, not real Fable. (This is separate
-> from the ACP agents, which really do run Claude/Codex — see Part 6.)
+### 3A. Chat brain via ANY API key (Kimi, GLM, OpenAI, Anthropic, …)
 
----
+The chat brain is defined entirely by a **provider block** in `openclaw.json → models.providers`. The
+shape is always the same — a base URL, a wire-protocol (`api`), your key, and the model list:
 
-## 4. Discord + the proxy bridge (the part that makes Discord reachable)
-
-Because this network blocks Discord directly, all Discord traffic is proxied. OpenClaw only speaks
-HTTP-proxy, so we run a small bridge in front of UniClash's SOCKS5h port.
-
-### 4a. The bridge
-
-`~/.openclaw/discord_socks_bridge.py` — an HTTP-proxy → SOCKS5h bridge. Listens on `127.0.0.1:7994`,
-forwards every `CONNECT` over SOCKS5h to UniClash on `127.0.0.1:7993` (so hostnames resolve at
-UniClash, beating the local DNS poisoning). Key hardening it carries:
-- `SO_EXCLUSIVEADDRUSE` singleton (Windows lets multiple procs share a port otherwise).
-- `pythonw`-safe (redirects stderr to `bridge.log`, since `pythonw` has no console).
-- **`TCP_NODELAY` + `SO_KEEPALIVE`** on both tunnel sockets — without `TCP_NODELAY`, Nagle delays
-  Discord's tiny websocket heartbeats and Discord drops the gateway ("heartbeat ACK timeout").
-
-Launcher `~/.openclaw/start_bridge.ps1` kills any old bridge and starts a fresh hidden `pythonw`
-instance, then verifies `Test-NetConnection 127.0.0.1 -Port 7994`.
-
-Autostart at logon: a shortcut/VBS in the Startup folder (`openclaw-discord-bridge.vbs`) launches it
-hidden. **The bridge must be up BEFORE the gateway**, or the gateway flaps in reconnect backoff.
-
-### 4b. Point OpenClaw at the bridge
-
-In `openclaw.json`:
 ```jsonc
-"proxy": { "proxyUrl": "http://127.0.0.1:7994" },
-"channels": { "discord": {
-    "enabled": true,
-    "token": "<DISCORD_BOT_TOKEN>",          // or via .env; see Part 5
-    "proxy": "http://127.0.0.1:7994",         // Discord REST + gateway websocket both use the bridge
-    "allowFrom": ["<YOUR_DISCORD_USER_ID>"],  // who may command the bot
-    "execApprovals": { ... },                 // see Part 7
-    "threadBindings": { ... },
-    "groupPolicy": { ... }
-}}
+"models": {
+  "mode": "merge",
+  "providers": {
+    "<provider-name>": {
+      "baseUrl": "<https endpoint>",
+      "api": "anthropic-messages",          // wire protocol: "anthropic-messages" or an OpenAI value
+      "apiKey": "<YOUR_API_KEY>",           // or pull from .env; see Part 6
+      "models": [
+        { "id": "<model-id>", "name": "<label>", "reasoning": true,
+          "input": ["text","image"], "contextWindow": 262144, "maxTokens": 32768 }
+      ]
+    }
+  }
+},
+"agents": { "defaults": { "model": { "primary": "<provider-name>/<model-id>" } } }
 ```
 
-### 4c. Codex/OpenAI proxy (separate path)
+The `api` field is OpenClaw's protocol selector: **`anthropic-messages`** for Anthropic-style endpoints,
+an **OpenAI** value (e.g. `openai-chat` / `openai-responses`) for OpenAI-style endpoints. If unsure,
+copy a known-good block for that provider and run `openclaw doctor` to validate.
 
-The Codex ACP backend reaches OpenAI directly through UniClash (not the bridge), via env vars set in
-the gateway environment:
-```
-HTTPS_PROXY=http://127.0.0.1:7993
-HTTP_PROXY=http://127.0.0.1:7993
-NO_PROXY=localhost,127.0.0.1,::1
-```
-UniClash's rule group `CATEGORY-AI-!CN` routes the OpenAI/Anthropic/Google-AI domains out through the
-VPN so they resolve and connect.
+**Provider quick-reference** (confirm current base URLs + model ids in each provider's own dashboard):
 
-### 4d. Sanity check the bridge
-```powershell
-(Test-NetConnection 127.0.0.1 -Port 7994).TcpTestSucceeded   # bridge up?
-# through the bridge, discord.com should answer:
-curl.exe -x http://127.0.0.1:7994 -s -o NUL -w "%{http_code}" https://discord.com
-```
+| Provider | `baseUrl` | `api` | Where to get the key |
+|---|---|---|---|
+| **Kimi** (Moonshot) | `https://api.kimi.com/coding/` | `anthropic-messages` | **kimi.com/code** (a *coding subscription* key — NOT moonshot.ai, which 401s on this endpoint) |
+| **GLM / Z.ai** (Zhipu) | `https://api.z.ai/api/anthropic` (Anthropic-compat) or `https://api.z.ai/api/paas/v4/` (OpenAI-compat) | `anthropic-messages` / OpenAI | z.ai coding plan dashboard |
+| **OpenAI** | `https://api.openai.com/v1/` | OpenAI (`openai-chat`/`openai-responses`) | platform.openai.com → API keys (`sk-proj-…`) |
+| **Anthropic** | `https://api.anthropic.com/` | `anthropic-messages` | console.anthropic.com (`sk-ant-…`) |
+| **DeepSeek / OpenRouter / local (Ollama, LM Studio, vLLM)** | provider/host URL | OpenAI (they're OpenAI-compatible) | provider dashboard / none for local |
+
+> Concrete Kimi example (the reference build's default) — `openclaw.template.json` ships this verbatim:
+> models `k3` (1M ctx), `kimi-for-coding`, `kimi-for-coding-highspeed`; default `kimi/auto`.
+>
+> **Gotcha (echoing endpoints):** some coding endpoints (Kimi's included) **echo any model id** — asking
+> for `opus` or `fable` still serves *their* model wearing that label. A `/model fable` that "works" is
+> not real Fable. Real Claude/Codex only comes through the **ACP agents** (3B/3C).
+
+> **"Subscription" note:** most consumer subscriptions can't directly power the *chat brain*, because
+> they're OAuth-gated to their own CLI/app rather than exposing a key. The clean way to use a
+> subscription is the **ACP coding agents** below (3B/3C). The exception is products that sell a
+> *coding-subscription API key* (e.g. Kimi's kimi.com/code, GLM's coding plan) — those are already
+> "API key" providers and slot straight into 3A.
+
+### 3B. Coding agent via a **Claude subscription** (Anthropic Pro/Max)
+
+This runs the real `claude` CLI as an ACP backend, on your Anthropic **subscription** (OAuth login) —
+so `/acp claude …` in Discord spawns a genuine Claude Code agent.
+
+1. **Install + log in** the Claude CLI:
+   ```bash
+   npm install -g @anthropic-ai/claude-code
+   claude            # on first run, choose "Log in with your Anthropic account" (Pro/Max)
+   claude --version  # must run
+   ```
+   OAuth tokens are stored in **`~/.claude/.credentials.json`** (never commit this).
+2. **Pick the model** in **`~/.claude/settings.json`** → `"model": "<opus|sonnet|haiku|fable|full-id>"`.
+   (This is the model the ACP agent uses — separate from your chat brain.)
+3. **Endpoint:** leave `ANTHROPIC_BASE_URL` unset (or `https://api.anthropic.com`) to use real Anthropic.
+4. Turn on the acpx `claude` backend (Part 7). Spawn recipe: `agentId: "claude"`.
+
+> **Alternative — API key instead of subscription:** set `ANTHROPIC_API_KEY` (or point
+> `ANTHROPIC_BASE_URL` at any Anthropic-compatible endpoint + key). Pay-per-token, no subscription.
+>
+> **ToS caveat:** running a *subscription* login inside a third-party harness (acpx) is a gray area in
+> Anthropic's terms. If you want to stay strictly clean, use an **API key** for the ACP backend instead.
+
+### 3C. Coding agent via a **Codex / ChatGPT subscription** (Plus/Pro)
+
+This runs the real `codex` CLI as an ACP backend, on your **ChatGPT subscription** (OAuth) — so
+`/acp codex …` spawns a genuine Codex agent billed to your Plus/Pro plan, not per-token.
+
+1. **Install + log in** the Codex CLI:
+   ```bash
+   npm install -g @openai/codex      # or the official installer for your OS
+   codex login                       # choose "Sign in with ChatGPT" (your Plus/Pro account)
+   codex --version                   # must run
+   ```
+   Account OAuth is stored in **`~/.codex/auth.json`** with `auth_mode = "chatgpt"` (never commit).
+2. **Give the ACP backend that auth.** acpx uses a dedicated home `~/.openclaw/acpx/codex-home/`:
+   - Copy your account `auth.json` into `~/.openclaw/acpx/codex-home/auth.json`, **or** set the wrapper's
+     `CODEX_HOME` to `~/.codex`. (Copying is simplest; re-copy if the token later rotates.)
+   - `~/.openclaw/acpx/codex-home/config.toml` → `model = "<gpt-5.x>"`, `model_reasoning_effort = "xhigh"`,
+     and your trusted-project list.
+3. Turn on the acpx `codex` backend (Part 7). Spawn recipe: `agentId: "codex"`.
+
+> **Account vs API-key gotcha (learned the hard way):** on the **subscription/account** path, OpenAI
+> **server-side-gates the newest models by your `codex` CLI version.** A newer model (e.g. `gpt-5.6`)
+> can return *"requires a newer version of Codex"* on an older CLI, while an older model (e.g. `gpt-5.5`)
+> works fine. Fixes: **update the `codex` CLI**, or use a model your version is allowed, or switch that
+> backend to an **API key** (`OPENAI_API_KEY = sk-proj-…` in `codex-home/auth.json`) — the **API-key path
+> has no such version gate**, but it's pay-per-token instead of included in your subscription.
 
 ---
 
-## 5. `~/.openclaw/.env` (secrets)
+## 4. Discord bot (provider-independent)
 
-This file holds the two secrets OpenClaw injects as managed env keys. **Never commit it.**
+1. <https://discord.com/developers> → **New Application** → **Bot** → **Reset/Copy Token** → this is your
+   `DISCORD_BOT_TOKEN`.
+2. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** (required to read
+   messages). Enable **Server Members** only if you need it.
+3. **OAuth2 → URL Generator** → scopes `bot` (+ `applications.commands`) → bot permissions
+   (Send Messages, Read Message History, Add Reactions, and — if you want the bot to work in threads —
+   Create/Send in Threads). Open the generated URL and invite the bot to your server.
+4. Wire it in `openclaw.json → channels.discord` (token via `.env`, plus who may command it):
+   ```jsonc
+   "channels": { "discord": {
+       "enabled": true,
+       "token": { "source": "env", "id": "DISCORD_BOT_TOKEN" },
+       "allowFrom": ["<YOUR_DISCORD_USER_ID>"],     // only these users can command the bot
+       "execApprovals": { ... },                     // Part 8
+       "threadBindings": { "enabled": true },
+       "groupPolicy": "open"
+       // "proxy": "http://127.0.0.1:7994"           // ADD ONLY on the proxy path (Part 5B)
+   }}
+   ```
+   Get your Discord user id by enabling Developer Mode in Discord → right-click yourself → Copy User ID.
+
+---
+
+## 5. Network: direct (native) vs proxied (China / blocked)
+
+**Decision:** can this machine open `discord.com` (and `api.openai.com` / `api.anthropic.com`) normally
+in a browser?
+- **Yes → you're "native".** Do **5A** (no proxy at all). This is most of the world.
+- **No — behind the Great Firewall / a blocking network → you're "proxy".** Do **5B**.
+
+### 5A. Native / direct (NOT in China) — no proxy
+
+Nothing to install. In `openclaw.json`:
+```jsonc
+"proxy": { "enabled": false },
+"channels": { "discord": { "proxy": null /* omit the proxy key entirely */ } }
+```
+Discord, OpenAI, and Anthropic all connect directly. Skip to Part 6.
+
+### 5B. Proxy path (China / blocked network) — UniClash + a bridge
+
+You need a VPN/proxy that can actually reach Discord + the AI APIs. The reference build uses
+**UniClash** (any Clash-family or SOCKS/HTTP proxy works) exposing a local proxy port. Two wrinkles:
+
+1. **OpenClaw speaks only HTTP proxy, not SOCKS.** If your proxy only offers SOCKS5, run the tiny
+   included **HTTP→SOCKS5h bridge** in front of it:
+   - `~/.openclaw/discord_socks_bridge.py` — listens on `127.0.0.1:7994`, forwards every `CONNECT` over
+     **SOCKS5h** to your proxy (e.g. UniClash on `127.0.0.1:7993`). SOCKS5**h** = hostnames resolve at
+     the proxy, beating local DNS poisoning.
+   - Hardening it carries (keep these): `SO_EXCLUSIVEADDRUSE` singleton; **`TCP_NODELAY` + `SO_KEEPALIVE`**
+     on both tunnel sockets — without `TCP_NODELAY`, Nagle delays Discord's tiny websocket heartbeats and
+     Discord drops the gateway ("heartbeat ACK timeout").
+   - **(Windows)** launcher `~/.openclaw/start_bridge.ps1` starts a hidden `pythonw` instance and verifies
+     `Test-NetConnection 127.0.0.1 -Port 7994`. Autostart via a Startup-folder VBS. **The bridge must be
+     up BEFORE the gateway** or the gateway flaps in reconnect backoff. On macOS/Linux run the same script
+     under `python3` as a `launchd`/`systemd` unit.
+   - *If your proxy already exposes an **HTTP** proxy port, skip the bridge* and point OpenClaw straight
+     at that `http://…` URL.
+2. **Point OpenClaw at the proxy** (`openclaw.json`):
+   ```jsonc
+   "proxy": { "enabled": true, "proxyUrl": "http://127.0.0.1:7994" },
+   "channels": { "discord": { "proxy": "http://127.0.0.1:7994" } }   // Discord REST + gateway websocket
+   ```
+3. **AI-API traffic for the coding agents** (OpenAI/Anthropic) — set proxy env in the gateway
+   environment (Part 10's `gateway.cmd`), routed straight through your proxy port:
+   ```
+   HTTPS_PROXY=http://127.0.0.1:7993
+   HTTP_PROXY=http://127.0.0.1:7993
+   NO_PROXY=localhost,127.0.0.1,::1
+   ```
+   Make sure your proxy's rules route the AI domains (OpenAI/Anthropic/Google-AI) out through the VPN.
+4. **Sanity check:**
+   ```powershell
+   (Test-NetConnection 127.0.0.1 -Port 7994).TcpTestSucceeded
+   curl.exe -x http://127.0.0.1:7994 -s -o NUL -w "%{http_code}" https://discord.com
+   ```
+
+---
+
+## 6. `~/.openclaw/.env` (secrets)
+
+OpenClaw injects these as managed env keys. **Never commit it.** Put in it whichever keys your chosen
+brain/agents need:
 
 ```dotenv
 # ~/.openclaw/.env
-DISCORD_BOT_TOKEN=<your Discord bot token from the Developer Portal>
-KIMI_API_KEY=<your kimi.com/code key — sk-...>
+DISCORD_BOT_TOKEN=<your Discord bot token>
+# --- chat brain (3A): whichever provider you chose ---
+KIMI_API_KEY=<kimi.com/code key>            # example; or GLM/OpenAI/Anthropic key, named to match your provider block
+# OPENAI_API_KEY / ANTHROPIC_API_KEY / GLM_API_KEY=...
 ```
 
-`gateway.cmd` declares these as managed keys so the service picks them up:
+Declare them as managed keys so the service picks them up (in `gateway.cmd`, Part 10):
 ```
 set "OPENCLAW_SERVICE_MANAGED_ENV_KEYS=DISCORD_BOT_TOKEN,KIMI_API_KEY"
 ```
 
-Other secrets that live **outside** `.env` (each in its own home — see the file map at the end):
+Secrets that live **outside** `.env` (each in its own home):
 - Gateway control token → `openclaw.json` (`gateway.auth.token`)
 - Exec-approvals socket token → `~/.openclaw/exec-approvals.json`
-- OpenAI key (Codex backend) → `~/.openclaw/acpx/codex-home/auth.json` (`OPENAI_API_KEY`)
-- Anthropic OAuth (Claude backend) → `~/.claude/.credentials.json`
-
-## 6. `openclaw.json` — section by section
-
-Start from `openclaw.template.json` in this folder (it's the live config with secrets stripped). The
-top-level keys and what they do:
-
-| Key | What it controls |
-|---|---|
-| `env` | Managed env passed to the gateway (proxy vars, model defaults). |
-| `models` | Model registry — the Kimi coding models + the default brain `model`. |
-| `agents` | Agent defaults (system prompt roots, tool policy). |
-| `plugins` | **Which plugins load** — `allow: ["kimi","acpx","discord","memory-core"]` + per-plugin `entries`. This is where ACP is turned on (Part 7). |
-| `gateway` | `mode: local`, bind `127.0.0.1:18789`, and `gateway.auth.token` (control-API secret). |
-| `session` | Session store location + policy. |
-| `tools` | Tool allow/deny profiles (e.g. `tools.deny: [write, edit, apply_patch]` as a guardrail). |
-| `skills` | The 51 bundled skills' on/off flags (`skills.entries.<name>.enabled`). |
-| `channels` | **Discord** config (Part 4b) — token, proxy, allowFrom, execApprovals, threadBindings. |
-| `proxy` | `proxyUrl: http://127.0.0.1:7994` — the bridge, used for all proxied HTTP. |
-| `messages` | Chat behaviour — `groupChat.mentionPatterns` (wake-words like `clanker`/`claw`), status reactions, queue mode. |
-
-Edit this file live — **config changes are re-read by the gateway** (unlike code patches). Validate
-before restarting: `openclaw doctor` catches schema errors (a bad value silently kills the gateway).
+- Codex backend key/account → `~/.openclaw/acpx/codex-home/auth.json`
+- Claude backend OAuth → `~/.claude/.credentials.json`
 
 ---
 
-## 7. The ACP harness (acpx) — real coding agents over Discord
+## 7. The ACP harness (acpx) — coding agents over Discord
 
-ACP = **Agent Client Protocol**, a standard JSON-RPC-over-stdio protocol. OpenClaw's **acpx** plugin is
-an ACP *client*; it spawns a coding-agent CLI wrapped as an ACP *server* and talks to it. Two backends
-are wired: **Claude Code** and **Codex** — both installed, interchangeable, chosen by `agentId`.
+ACP = **Agent Client Protocol**, a JSON-RPC-over-stdio standard. OpenClaw's **acpx** plugin is an ACP
+*client*; it spawns a coding-agent CLI wrapped as an ACP *server*. Backends are chosen by `agentId`:
+`claude` (set up in 3B) and/or `codex` (3C).
 
 ### 7a. Turn the plugin on (`openclaw.json`)
 ```jsonc
-"plugins": { "allow": ["kimi","acpx","discord","memory-core"],
+"plugins": { "allow": ["<your-provider>","acpx","discord","memory-core"],
   "entries": {
-    "acpx": {
-      "enabled": true,
-      "config": {
-        "permissionMode": "approve-reads",        // auto-allow reads, prompt for writes/exec
-        "nonInteractivePermissions": "deny",       // if no human to approve → deny
-        "timeoutSeconds": 120
-      }
-    }
+    "acpx": { "enabled": true, "config": {
+      "permissionMode": "approve-reads",     // auto-allow reads, prompt for writes/exec
+      "nonInteractivePermissions": "deny",    // no human to approve → deny
+      "timeoutSeconds": 120
+    }}
 }}
 ```
 
-### 7b. Install the two ACP adapters
-acpx keeps its own npm project under `~/.openclaw/npm/projects/openclaw-acpx-<hash>/`. The adapters
-land there automatically on first spawn (or `openclaw` installs them):
-- `@agentclientprotocol/claude-agent-acp` (Claude backend) — spawns the `claude` CLI.
-- `@zed-industries/codex-acp` (Codex backend) — spawns the `codex` CLI.
+### 7b. The adapters
+acpx keeps its own npm project under `~/.openclaw/npm/projects/openclaw-acpx-<hash>/`. The ACP adapters
+install there (automatically on first spawn):
+- `@agentclientprotocol/claude-agent-acp` — a **JS** package; spawns the `claude` CLI. (Easy: `npm install`.)
+- `@zed-industries/codex-acp` — a **native binary**; spawns/embeds `codex`. (It's compiled Rust pinned to
+  a specific codex version — treat it as a black box; don't expect to rebuild it against an arbitrary
+  codex version without a real porting effort.)
 
-Both CLIs must be installed globally and runnable: `claude --version`, `codex --version`.
+Both underlying CLIs must be installed + logged in (Parts 3B/3C): `claude --version`, `codex --version`.
 
 ### 7c. The wrappers (`~/.openclaw/acpx/`)
-acpx generates one wrapper per backend; you don't hand-write these, but know they exist:
-- `claude-agent-acp-wrapper.mjs` — launches the Claude adapter. (Note: it writes **no** stderr log.)
-- `codex-acp-wrapper.mjs` — launches the Codex adapter; logs to `codex-acp-wrapper.stderr.*`.
+acpx generates one wrapper per backend (you don't hand-write these):
+- `claude-agent-acp-wrapper.mjs` — launches the Claude adapter.
+- `codex-acp-wrapper.mjs` — launches the Codex adapter; can set `CODEX_HOME` to the acpx `codex-home`.
 
-Each spawn gets a **process lease** (`process-leases` store, cap 4096) tagging it with a `leaseId`,
-`sessionKey`, and `rootPid` so OpenClaw can supervise + clean it up.
+Each spawn gets a **process lease** (cap 4096) tagging it with `leaseId`, `sessionKey`, `rootPid` so
+OpenClaw can supervise + clean it up.
 
-### 7d. Claude Code backend — config + auth
-The Claude backend runs the `claude` CLI, which uses **its own** config home `~/.claude/`:
-- **Model** → `~/.claude/settings.json` → `"model": "fable"` (this is what makes it Claude Fable 5).
-- **Auth** → `~/.claude/.credentials.json` (Anthropic OAuth — set up by `claude` login / `switch-claude`).
-- **Endpoint** → `ANTHROPIC_BASE_URL` env. Unset/`https://api.anthropic.com` = real Anthropic.
-- Instructions → `~/.claude/CLAUDE.md` + the workspace `AGENTS.md`.
-
-> **ToS note:** running the `claude` CLI on an Anthropic **subscription** inside a third-party harness
-> (acpx) is a gray area. To be clean, point `ANTHROPIC_BASE_URL` at Kimi/an API key instead of the sub.
-
-### 7e. Codex backend — config + auth
-The Codex backend runs the `codex` CLI with a dedicated home `~/.openclaw/acpx/codex-home/`:
-- `config.toml` → `model = "gpt-5.6-terra"`, `model_reasoning_effort = "xhigh"`, trusted project list.
-- `auth.json` → `OPENAI_API_KEY = "sk-proj-…"` (this is what's billed — a **pay-per-token API key**, not a ChatGPT sub).
-- Reaches OpenAI via the `HTTPS_PROXY=127.0.0.1:7993` env (Part 4c).
-
-### 7f. How a session is created + which backend
-- Spawn from Discord / AGENTS.md: `sessions_spawn({ runtime: "acp", agentId: "claude", ... })`
-  (or `agentId: "codex"`). The `agentId` picks the wrapper.
-- Each session gets key **`agent:<agentId>:acp:<uuid>`** (random UUID, **not** the channel id) stored
-  in `~/.openclaw/workspace/state/sessions/*.json`.
-- **Multiple sessions are supported** (up to the 4096 lease cap) — a channel/thread binds to one
+### 7d. Sessions & multiplicity
+- Spawn from Discord / `AGENTS.md`: `sessions_spawn({ runtime: "acp", agentId: "claude" | "codex", … })`.
+- Each session gets key **`agent:<agentId>:acp:<uuid>`** (a random UUID, **not** the channel id).
+- **Multiple concurrent sessions are supported** (up to the lease cap). A channel/thread binds to one
   ongoing session, but you can spawn more; each is a separate CLI process with its own context.
-- Claude session transcripts land in `~/.claude/projects/C--Users-ericc--openclaw-workspace/<id>.jsonl`;
-  Codex sessions in `~/.openclaw/acpx/codex-home/sessions/…`.
+- Transcripts: Claude → `~/.claude/projects/<workspace-slug>/<id>.jsonl`; Codex → `~/.openclaw/acpx/codex-home/sessions/…`.
 
-### 7g. Verify a backend end-to-end (no Discord needed)
-Drive the wrapper directly with a minimal ACP client (`initialize → session/new → session/prompt`).
-A throwaway probe is enough — if you get a `stopReason: end_turn` with model text back, the backend
-works. (This is how Codex was confirmed hitting real OpenAI, and Claude confirmed as the live bot.)
+### 7e. Verify a backend end-to-end (no Discord needed)
+Drive a wrapper directly with a minimal ACP client (`initialize → session/new → session/prompt`). If you
+get `stopReason: end_turn` with model text back, the backend works. (Good for confirming a subscription
+login actually reaches the provider before wiring Discord.)
 
 ---
 
-## 8. Exec approvals (human-in-the-loop for risky actions)
+## 8. Exec approvals (human-in-the-loop)
 
 When an agent wants to do something guarded (run a shell command, write a file), OpenClaw posts an
-**approval card** and waits for a human to Allow/Deny.
-
-`openclaw.json → channels.discord.execApprovals`:
+**approval card** and waits for a human. `openclaw.json → channels.discord.execApprovals`:
 ```jsonc
 "execApprovals": {
   "enabled": true,
-  "approvers": ["<YOUR_DISCORD_USER_ID>"],   // who may approve
+  "approvers": ["<YOUR_DISCORD_USER_ID>"],
   "cleanupAfterResolve": true,
-  "target": "channel"                         // where the card posts: "dm" | "channel" | "both"
+  "target": "channel"                         // ONLY "dm" | "channel" | "both"
 }
 ```
-> **Gotcha:** `target` accepts only `dm` / `channel` / `both`. Setting `"origin"` (an internal name)
+> **Gotcha:** `target` accepts only `dm` / `channel` / `both`. Any other value (e.g. `"origin"`)
 > **crashes the gateway** with a schema error → bot goes offline. Always `openclaw doctor` after editing.
 
-The socket token for the approvals channel lives in **`~/.openclaw/exec-approvals.json`** (secret).
-
-Belt-and-suspenders guardrails (in `openclaw.json → tools`):
-- `tools.deny: ["write","edit","apply_patch"]` — hard-blocks direct file mutation tools.
-- Run `exec-policy preset cautious` before any unattended session (otherwise shell `del`/`Remove-Item`
-  can run unprompted when exec is set to full-auto).
+Guardrails (in `openclaw.json → tools`):
+- `tools.deny: ["write","edit","apply_patch"]` — hard-blocks direct file-mutation tools.
+- Prefer `exec.security` cautious/ask for unattended sessions; full-auto (`security:"full", ask:"off"`)
+  lets shell `del`/`rm` run unprompted. The socket token lives in `~/.openclaw/exec-approvals.json`.
 
 ---
 
-## 9. Voice (speech-to-text)
+## 9. Voice (optional, speech-to-text)
 
-Discord voice notes → local Whisper transcription → the brain. Pieces:
-- **whisper.cpp** built with GPU (cuBLAS) support; model `large-v3-turbo-q8_0`, `-l en`.
-- A **load-aware router** (`whisper-cli.cmd` + `router.py`) picks GPU vs CPU model by current load.
-- Wired as the **primary** transcriber (Discord's native transcript is the last-resort fallback).
-- Wake-word gate: only acts on `openclaw`/`claw`/`clanker`/… ; reacts 👂 (heard keyword) / 👄 (heard, no keyword).
+Discord voice notes → local Whisper transcription → the brain. Full setup in **`whisper/WHISPER-SETUP.md`**.
+In short: build **whisper.cpp** (GPU/cuBLAS if you have an NVIDIA card), download `large-v3-turbo-q8_0`,
+and point `openclaw.json → tools.media.audio` at the `whisper-cli.cmd` wrapper. A load-aware router picks
+GPU vs CPU by current load; Discord's native transcript is the last-resort fallback.
 
-> **Status:** the ffmpeg-resolution fix voice needs is a **code** patch, so it's caught by the
-> stale-dist wall (Part 2). Voice transcription may not be fully live until a clean reinstall. See
-> `CHANGELOG.md` for the exact ffmpeg + earmouth details.
+> The router + CLI work regardless, but the "make whisper the *primary* transcriber" and 👂/👄 reaction
+> pieces are **code** patches → gated by the stale-dist wall (Part 2). They fully engage only on a
+> gateway that loads fresh dist.
 
 ---
 
-## 10. Running it (Windows Scheduled Tasks)
+## 10. Running it
 
-The gateway is **not** run by hand — it's a Scheduled Task so it survives logon and self-heals.
+The gateway should run as a background **service** so it survives logout and self-heals.
 
-- **`~/.openclaw/gateway.cmd`** — sets env (managed keys, `TMPDIR`, port 18789, `NODE_DISABLE_COMPILE_CACHE=1`)
-  then runs `node …\openclaw\dist\index.js gateway --port 18789`.
-- **`~/.openclaw/gateway.vbs`** — hidden launcher the task invokes.
+**(Windows) — Scheduled Tasks (the reference):**
+- `~/.openclaw/gateway.cmd` — sets env (managed keys, `TMPDIR`, port 18789, proxy env if on the 5B path)
+  then runs `node …/openclaw/dist/index.js gateway --port 18789`.
+- `~/.openclaw/gateway.vbs` — hidden launcher the task invokes.
 - Task **"OpenClaw Gateway"** runs the vbs at logon.
-- Task **"OpenClaw Status Board"** runs `status_board.py` — a model-free daemon that edits a `#status`
-  Discord webhook every 5s (live gateway up/down, Claude/Kimi usage via `usage_status.py`). It keeps
-  working even when the gateway is down.
+- Task **"OpenClaw Status Board"** (optional) runs a model-free daemon that edits a `#status` Discord
+  webhook every few seconds (gateway up/down + usage). Keeps working even when the gateway is down.
 
-Start / stop / restart — see **`COMMANDS.md`**. The essentials:
+**(macOS/Linux):** wrap the same `node … gateway --port 18789` in a `launchd` plist / `systemd` unit /
+`pm2` process. Set the proxy env there if on the 5B path.
+
+Essentials (full cheat-sheet in **`COMMANDS.md`**):
 ```powershell
-# start bridge FIRST, then the gateway
+# (5B only) start the bridge FIRST
 powershell -File ~\.openclaw\start_bridge.ps1
+# start the gateway
 Enable-ScheduledTask -TaskName 'OpenClaw Gateway'; Start-ScheduledTask -TaskName 'OpenClaw Gateway'
-# reachable?
-(Test-NetConnection 127.0.0.1 -Port 18789).TcpTestSucceeded
+(Test-NetConnection 127.0.0.1 -Port 18789).TcpTestSucceeded     # reachable?
 ```
 
 > **Two hard-won operational rules:**
-> 1. **Do NOT rapid-restart the gateway.** The node process is launched *detached* (a watchdog respawns
->    it instantly when killed), so `Stop-ScheduledTask` alone won't stop it — kill the node PID for a
->    real restart. And several fast restarts trip Discord's one-login-at-a-time limit, making the bot
->    look permanently stuck at "awaiting gateway readiness" (it self-recovers once you stop).
-> 2. **Bridge up before gateway**, always.
+> 1. **Don't rapid-restart the gateway.** It may be launched *detached* with a watchdog that respawns it
+>    instantly, so `Stop-ScheduledTask` alone won't stop it — kill the node PID for a real restart. And
+>    several fast restarts trip Discord's one-login-at-a-time (IDENTIFY) limit, leaving the bot stuck at
+>    "awaiting gateway readiness" until you stop and let it settle.
+> 2. **(5B) Bridge up before gateway**, always.
 
 ---
 
 ## 11. Personality + memory (`~/.openclaw/workspace/`)
 
-The bot's behaviour is plain Markdown the brain reads live (so edits take effect immediately):
-- `AGENTS.md` — agent instructions, the `sessions_spawn` ACP spawn recipes, and the `/claw` command
-  helper (maps "set permission to bypass" → the exact `/acp set-mode bypassPermissions`, etc.).
-- `IDENTITY.md` / `SOUL.md` / `USER.md` — who clanker is, tone, who you are.
-- `HEARTBEAT.md` — autonomous-tick instructions (**disabled** by default so Kimi only runs when prompted).
+Plain Markdown the brain reads live (edits take effect immediately):
+- `AGENTS.md` — agent instructions, the `sessions_spawn` ACP recipes, and command helpers.
+- `IDENTITY.md` / `SOUL.md` / `USER.md` — who the bot is, tone, who you are.
+- `HEARTBEAT.md` — autonomous-tick instructions (**disable** it so the brain only runs when prompted).
 - `MEMORY.md` + the `memory-core` plugin — persistent notes.
-- `skills/` — your own skills; `skill-workshop/` — drafts.
+- `skills/` — your own skills.
 
 ---
 
-## 12. Known issues / gotchas (read before debugging)
+## 12. Known issues / gotchas
 
 | Symptom | Cause / fix |
 |---|---|
-| A **code** feature won't turn on (voice ffmpeg, a Discord button, `/acp` help values) | **Stale-dist wall** — gateway runs old bytecode for hand-patched `dist/*.js`. Config works, code patches don't. Fix = clean `npm` reinstall of openclaw. |
-| Bot stuck at "awaiting gateway readiness", flaky | You rapid-restarted → Discord IDENTIFY limit. Stop restarting; it self-recovers. Also check the bridge is up + has `TCP_NODELAY`. |
+| A **code** feature won't turn on (voice primary, a custom Discord button) | **Stale-dist wall** — gateway runs old bytecode for hand-patched `dist/*.js`. Config works, code patches don't. Fix = clean `npm` reinstall. |
+| Bot stuck at "awaiting gateway readiness" | Rapid-restart → Discord IDENTIFY limit. Stop restarting; it self-recovers. (5B) Confirm the bridge is up + has `TCP_NODELAY`. |
 | Gateway "won't stop" via `Stop-ScheduledTask` | Node is detached + self-healed. Kill the node PID directly, then start the task. |
-| `/model fable` "works" but isn't Fable | Kimi endpoint echoes any model id → serves Kimi. Real Fable/Claude is only via the **ACP claude** backend. |
+| `/model <something>` "works" but isn't that model | Coding endpoints echo any model id → serve their own model. Real Claude/Codex only via the **ACP** backends. |
 | Editing `openclaw.json` took the bot offline | A schema error (e.g. `execApprovals.target:"origin"`) silently kills it. Always `openclaw doctor` before restart. |
-| `python` hangs | Use **`python3`** (bare `python` is a 0-byte stub on this PC). |
-| Discord dies whenever the VPN changes | Discord needs *all* its traffic proxied through the bridge → UniClash. Keep the bridge + UniClash up. |
+| Codex account rejects the newest model | Account path gates models by `codex` CLI version. Update codex, use an allowed model, or switch to an API key (no gate). |
+| Discord drops whenever the network/VPN changes | (5B) All Discord traffic must stay proxied through the bridge → your proxy. Keep both up. |
+| `python` hangs / not found | Use `python3` (or your system's Python-3 launcher). |
 
 ---
 
-## 13. File map (where every piece lives)
+## 13. File map
 
 | Path | Purpose | Secret? |
 |---|---|---|
-| `~/.openclaw/.env` | `DISCORD_BOT_TOKEN`, `KIMI_API_KEY` | **YES** |
+| `~/.openclaw/.env` | `DISCORD_BOT_TOKEN` + chat-brain key(s) | **YES** |
 | `~/.openclaw/openclaw.json` | main config (+ `gateway.auth.token`) | **YES** (token) |
-| `~/.openclaw/discord_socks_bridge.py` | HTTP→SOCKS5h bridge (7994→7993) | no |
-| `~/.openclaw/start_bridge.ps1` | bridge launcher | no |
-| `~/.openclaw/gateway.cmd` / `gateway.vbs` | gateway service launcher | no |
+| `~/.openclaw/discord_socks_bridge.py` | (5B) HTTP→SOCKS5h bridge | no |
+| `~/.openclaw/start_bridge.ps1` | (5B) bridge launcher | no |
+| `~/.openclaw/gateway.cmd` / `gateway.vbs` | (Windows) gateway service launcher | no |
 | `~/.openclaw/exec-approvals.json` | approvals socket token | **YES** |
 | `~/.openclaw/acpx/*-wrapper.mjs` | ACP backend wrappers (claude, codex) | no |
 | `~/.openclaw/acpx/codex-home/config.toml` | Codex model/settings | no |
-| `~/.openclaw/acpx/codex-home/auth.json` | `OPENAI_API_KEY` | **YES** |
-| `~/.openclaw/npm/projects/openclaw-acpx-*/` | installed acpx + ACP adapters | no |
+| `~/.openclaw/acpx/codex-home/auth.json` | Codex account/API key | **YES** |
 | `~/.openclaw/workspace/AGENTS.md` + `*.md` | personality + spawn recipes | no |
-| `~/.openclaw/workspace/state/sessions/*.json` | live ACP session state | no |
-| `~/.openclaw/workspace/tools/*.py` | patch/helper scripts (bridge, status board, patches) | no |
-| `~/.claude/settings.json` | Claude backend model (`"fable"`) | no |
-| `~/.claude/.credentials.json` | Anthropic OAuth | **YES** |
-| `%APPDATA%/npm/node_modules/openclaw/dist/` | the OpenClaw program (the stale-dist part) | no |
-| `%LOCALAPPDATA%/Temp/openclaw/openclaw-YYYY-MM-DD.log` | gateway runtime log | no |
+| `~/.claude/settings.json` | Claude backend model | no |
+| `~/.claude/.credentials.json` | Anthropic OAuth (Claude sub) | **YES** |
+| `~/.codex/auth.json` | ChatGPT/Codex OAuth (Codex sub) | **YES** |
+| OpenClaw install `…/openclaw/dist/` | the program (the stale-dist part) | no |
 
 **If you version this for backup:** commit `openclaw.template.json` (redacted), the bridge + launchers,
-the wrappers, the `workspace/*.md`, and the tools scripts. **Never commit** `.env`, `openclaw.json`
-(real), `auth.json`, `exec-approvals.json`, `.credentials.json`, `state/`, logs, or `node_modules`.
+the workspace `*.md`, and helper scripts. **Never commit** `.env`, the real `openclaw.json`, any
+`auth.json` / `.credentials.json`, `exec-approvals.json`, `state/`, logs, or `node_modules`.
 
 ---
 
-## 14. From-zero reproduction order (checklist)
+## 14. From-zero checklist
 
-1. Install Node + Python3; install & log in to `claude` and/or `codex` CLIs.
+1. Install Node (+ Python 3 if you'll use the 5B bridge or voice).
 2. `npm install -g openclaw`; run `openclaw` once to scaffold `~/.openclaw/`.
-3. Put secrets in `~/.openclaw/.env` (Discord + Kimi keys).
-4. Drop in `openclaw.json` from `openclaw.template.json`, fill the placeholders.
-5. Install UniClash; copy `discord_socks_bridge.py` + `start_bridge.ps1`; start the bridge; verify 7994.
-6. Enable the `discord`, `kimi`, `acpx`, `memory-core` plugins; set `channels.discord.proxy` + `proxy.proxyUrl` to `http://127.0.0.1:7994`.
-7. Set `execApprovals` + `allowFrom` to your Discord user id.
-8. For ACP: confirm `claude`/`codex` CLIs run; set `~/.claude/settings.json` model (Claude) and/or `codex-home/config.toml` + `auth.json` (Codex).
-9. Copy `workspace/AGENTS.md` + personality files.
-10. Register the **OpenClaw Gateway** (and optionally **Status Board**) Scheduled Tasks.
-11. `openclaw doctor` → start bridge → start gateway → `@clanker hi` in Discord.
-12. Test ACP: `/acp` a coding prompt; confirm a Claude/Codex session spawns.
+3. **Brain:** do 3A (API-key provider block) and/or 3B (Claude sub) and/or 3C (Codex sub). Confirm any
+   CLI logs in (`claude`/`codex --version`).
+4. **Discord:** create the bot, enable Message Content Intent, invite it, set `channels.discord` + `allowFrom`.
+5. **Network:** native? → `proxy.enabled:false`, done. Blocked (China)? → start the bridge, set the proxy
+   URLs + AI-API proxy env (5B).
+6. Put secrets in `~/.openclaw/.env`; fill `openclaw.json` from `openclaw.template.json`.
+7. Enable plugins: your provider, `acpx`, `discord`, `memory-core`. Set `execApprovals` + `allowFrom`.
+8. Copy `workspace/AGENTS.md` + personality files; disable `HEARTBEAT.md`.
+9. Register the gateway service (Scheduled Task / launchd / systemd). Optionally the Status Board.
+10. `openclaw doctor` → (5B: start bridge →) start gateway → `@bot hi` in Discord.
+11. Test ACP: `/acp` a coding prompt; confirm a Claude/Codex session spawns.
 
-Everything above is reconstructed from the live machine as of 2026-07-20. For the blow-by-blow history
-and every fix's rationale, read `CHANGELOG.md` in this folder.
+For the blow-by-blow history of the reference build and every fix's rationale, read `CHANGELOG.md`.

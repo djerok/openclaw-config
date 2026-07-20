@@ -1212,3 +1212,100 @@ router + CLI wrapper + patch scripts + WHISPER-SETUP.md; models/binaries exclude
 download). A `.gitignore` guards against committing secrets or large artifacts. The detailed setup
 **README stays local** (robotr/docs/openclawconfig/README.md) — not pushed, per Eric. Secret-gated
 before push (clean).
+
+## 2026-07-20 — README rewritten: provider-agnostic "OpenClaw + Discord" guide (not Kimi-only)
+
+Rewrote `README.md` (in `Desktop/openclawconfig/`) from a Kimi-specific guide into a **general
+OpenClaw + Discord setup guide** usable on any machine, per Eric ("not only need kimi… make it say
+openclaw discord setup… any api key (kimi, glm, etc), claude subscription, codex subscription…
+uniclash/proxy for china and native for those not… specify everything not only for my case").
+
+Structural changes:
+- **Two-brains framing up front:** (1) chat brain = one model provider via **API key**; (2) coding
+  agents (`/acp`) = Claude Code / Codex CLIs on an **API key OR a subscription** — independent, mixable.
+- **§3 "Choose your brain / power source"** replaces the Kimi-only section with three routes: **3A** any
+  API-key provider (generic `models.providers` block + a Kimi/GLM/OpenAI/Anthropic/DeepSeek quick-ref
+  table), **3B** Claude **subscription** (claude CLI OAuth → acpx `claude` backend, `~/.claude/…`, ToS
+  caveat + API-key alternative), **3C** Codex **subscription** (codex CLI ChatGPT OAuth → acpx `codex`
+  backend, `~/.codex/auth.json` → `codex-home/`, the account-vs-API-key model-version gate documented).
+- **§5 network is now conditional:** explicit decision (can you open Discord normally?). **5A native/
+  direct** = no proxy at all (`proxy.enabled:false`, drop `channels.discord.proxy`) for everyone outside
+  the GFW; **5B proxy** = the UniClash + HTTP→SOCKS5h bridge path for China/blocked networks (bridge
+  optional if the proxy already speaks HTTP).
+- **De-personalized:** paths → `~/…`, Discord IDs/tokens/keys → placeholders; Windows kept as the
+  reference with **(Windows)** tags + macOS/Linux (launchd/systemd/pm2) notes. Kept the hard-won gotchas
+  (stale-dist wall, don't-rapid-restart, endpoint model-echo, doctor-before-restart, codex version gate).
+- Honest note added that `@zed-industries/codex-acp` is a compiled native binary pinned to a codex
+  version (don't expect a trivial rebuild) — distilled from tonight's failed source-rebuild attempt.
+
+## 2026-07-20 — gpt-5.6 on the ChatGPT account UNLOCKED + codex wired in via MCP (Kimi + Claude callable)
+
+**The culprit was purely the codex CLIENT version.** Updating the external codex CLI
+`npm i -g @openai/codex@latest` (0.125.0 → **0.144.6**, current latest) cleared the account-path
+*"requires a newer version of Codex"* gate. On a ChatGPT **account**, plain `gpt-5.6` / `gpt-5.6-codex`
+are rejected ("not supported when using Codex with a ChatGPT account" — API-only names); the
+account-blessed 5.6 model is **`gpt-5.6-terra`** (codex's default on the account). Verified working:
+`codex exec` returned PONG/READY on gpt-5.6-terra with chatgpt auth. (The embedded codex-acp.exe still
+carries codex 0.137 → the `/acp codex` path stays too old until Zed ships a 0.144-based build; we did
+NOT rebuild it — see the rebuild-verdict memory.)
+
+**Integration = codex as an MCP server (no rebuild):** `codex mcp-server` (from the 0.144.6 CLI) wired
+into two places, both using the same command + safe flags
+(`-c approval_policy=never -c sandbox_mode=read-only -c model=gpt-5.6-terra -c notify=[]`):
+- **OpenClaw / Kimi brain** — added `mcp.servers.codex` to `~/.openclaw/openclaw.json` (node → codex.js
+  → mcp-server; connectTimeout 120, timeout 300). Gateway **hot-reloaded** it (`config hot reload applied
+  (mcp.servers.codex)`, no restart, Discord stayed up); child process spawned + persistent.
+- **Claude Code** — `claude mcp add -s user codex -- …` → `~/.claude.json` (user scope), so every Claude
+  Code session, including the `/acp claude` agent, can call codex.
+
+**Verified end-to-end** via a direct MCP handshake against `codex mcp-server`: `initialize` → serverInfo
+`codex-mcp-server 0.144.6`; `tools/list` → **`['codex', 'codex-reply']`** (run a session / continue a
+thread); `tools/call codex` → ran a real turn, **MODEL USED gpt-5.6-terra**, returned `MCPOK`.
+
+Sandbox is **read-only** (codex reads/reasons/returns code, does not autonomously edit files or run
+commands) — flip `sandbox_mode` to `workspace-write` in both the openclaw.json args and the `claude mcp
+add` command to let it apply changes. Reverting the CLI: `npm i -g @openai/codex@0.125.0`.
+
+## 2026-07-21 — Root-caused the "stale-dist wall": clean reinstall + verified re-patch (✅ + 🎤 fixed)
+
+The 🛑-stop / ✅-checkmark / 🎤-voice features that "silently didn't work" were all **hand-patches sitting
+on dead code paths.** OpenClaw's `dist` is minified + code-split into hundreds of hash-named, lazily-loaded
+chunks; the prior patches targeted the wrong chunk (`provider-DNXfDOia.js`), which the live Discord flow
+never loads. Verified by driving a **second Discord test bot** ("clanker 2", app id `1528723654576312361`,
+token in `~/.openclaw/.env`, in "clanker do my work" guild) — `allowBots:true` + it added to
+`channels.discord.allowFrom` so clanker responds to it; drive via REST through the bridge (`~/clanker-test/test_bot.py`).
+
+**Fix approach:** `npm install -g openclaw@2026.7.1-2` (clean dist, same version) → re-apply patches onto
+the **verified-live** bundles, each proven with a boot-trace before declaring done.
+
+- **✅ check-mark — FIXED + CONFIRMED.** Reaction went 👀→🧠→✅ and **stuck**. Root cause: after `setDone()`
+  applies ✅, `restoreInitial()` reverts it to the 👀 ack. Fix = `if (finished) return;` guard in
+  `channel-feedback-*.js` (the status controller) so a final done/error reaction can't be reverted.
+  Durable script: **`~/.openclaw/workspace/tools/checkmark_persist_patch.py`**. (Also flipped
+  `messages.statusReactions.enabled:true`.)
+- **🎤 voice — FIXED + CONFIRMED.** Sent a real Discord voice message (opus/ogg + waveform, flags=8192) →
+  clanker transcribed → replied → ✅. Root cause: `[media-understanding] audio: failed reason=ffmpeg not
+  found in trusted system directories`. Fix = placed ffmpeg/ffprobe in `~/.openclaw/ffmpeg/` + ran
+  **`ffmpeg_hardcode_patch.py`** (short-circuits `requireSystemBin("ffmpeg")` to that path).
+- **🛑 stop — DEFERRED (Eric shipped the 2).** The live Discord plugin *receives* reactions (intent on) but
+  wires **no handler** for them; the prior patch's handler bundle never loads, so a 🛑 reaction never
+  reaches the gateway. Viable path (Eric's idea): external watcher polls Discord for 🛑 → fires a stop
+  hook. Hook found: `openclaw gateway call chat.abort --params '{"sessionKey":"agent:main:discord:channel:<CH>","runId":"<id>"}'`
+  (needs the active runId; `sessions.abort` needs `key`). `/stop` is a slash command, not message-parsed.
+  Not built this session.
+
+**⚠️ PERSISTENCE / AUTO-START — UNRESOLVED (known-bad, has a clean fix).** clanker runs fine when launched
+directly (any interactive shell), but the **Scheduled Task can't start it**: the Task's batch-logon token
+gets `MODULE_NOT_FOUND` for `…\openclaw\dist\index.js` even though the file exists + `ericc` has FullControl.
+**Smoking gun:** the openclaw folder carries **AppContainer / `djerok116\CodexSandboxUsers` ACLs** because
+the reinstall ran *inside the Claude sandbox*. A plain Task token can't satisfy those. ACL grants
+(`icacls … /grant Users:(RX)`) are the right idea but recursing `node_modules` bogged the box into timeouts.
+**CLEAN FIX (do outside the sandbox):** open a normal PowerShell/cmd *yourself* and
+`npm install -g openclaw@2026.7.1-2` (or `openclaw onboard`) → gives the folder normal ACLs → the existing
+Task works. Then re-run `checkmark_persist_patch.py` + `ffmpeg_hardcode_patch.py` (both idempotent).
+
+**Manual start meanwhile:** `~/.openclaw/start_clanker.cmd` (run from your own terminal). Gateway currently
+runs as a direct process (not the Task) — survives until this machine/session ends. Config edits this
+session: `channels.discord.allowBots:true`, `allowFrom` += test-bot id, `messages.statusReactions.enabled:true`.
+`gateway.vbs`/`gateway.cmd`/the Task action were edited during debugging (blocking wscript, log redirect) —
+harmless but note before the clean reinstall.
