@@ -1496,3 +1496,7 @@ harmless but note before the clean reinstall.
   buttons that shell out to `clanker_control.py` and stream its output into a log pane. `Clanker Control.cmd`
   now launches it windowless via `pythonw`. Note: "OpenClaw" here **is** the gateway — Stop kills that node
   process, so the buttons turn OpenClaw itself on/off. All three scripts versioned in `openclawconfig/launcher/`.
+- **🔀 Gateway-only controls** (follow-up) — `clanker_control.py` refactored into reusable primitives
+  (`_launch_gateway`/`_kill_gateway`/`_disable_selfheal`/`_wait_up`) and gained `gw-start` / `gw-stop` /
+  `gw-restart` (bounce just the OpenClaw bot daemon, leaving watcher + voice-sweep + status board running —
+  handy after a config change). GUI now has **two labelled button rows**: *Whole stack* and *Gateway only*.

@@ -64,11 +64,12 @@ def kick_status():
 root = tk.Tk()
 root.title("Clanker Control")
 root.configure(bg=BG)
-root.geometry("560x460")
-root.minsize(480, 400)
+root.geometry("580x520")
+root.minsize(500, 460)
 
 big = font.Font(family="Segoe UI", size=20, weight="bold")
 lbl = font.Font(family="Segoe UI", size=11)
+small = font.Font(family="Segoe UI", size=9)
 mono = font.Font(family="Consolas", size=9)
 
 tk.Label(root, text="CLANKER", font=big, bg=BG, fg=FG).pack(pady=(16, 2))
@@ -92,26 +93,42 @@ for i, (key, name) in enumerate([("gw", "Discord bot (OpenClaw)"), ("w", "Stop-w
     labels[key] = st
 
 # buttons
-btnrow = tk.Frame(root, bg=BG)
-btnrow.pack(pady=4)
+buttons = []
 
 
-def mkbtn(text, color, action):
-    b = tk.Button(btnrow, text=text, width=10, font=lbl, bg=color, fg="#ffffff",
-                  activebackground=color, relief="flat", bd=0, padx=6, pady=8,
+def mkbtn(parent, text, color, action, w=10):
+    b = tk.Button(parent, text=text, width=w, font=lbl, bg=color, fg="#ffffff",
+                  activebackground=color, relief="flat", bd=0, padx=4, pady=8,
                   command=lambda: run(action))
-    b.pack(side="left", padx=6)
+    b.pack(side="left", padx=5)
+    buttons.append(b)
     return b
 
 
-buttons = [
-    mkbtn("▶  Start", GREEN, "start"),
-    mkbtn("■  Stop", RED, "stop"),
-    mkbtn("⟳  Restart", "#3a6ea5", "restart"),
-]
-refresh_btn = tk.Button(btnrow, text="↻ Refresh", width=9, font=lbl, bg=CARD, fg=FG,
-                        relief="flat", bd=0, padx=6, pady=8, command=kick_status)
-refresh_btn.pack(side="left", padx=6)
+def btnrow_with_label(text):
+    r = tk.Frame(root, bg=BG)
+    r.pack(pady=3)
+    tk.Label(r, text=text, font=small, bg=BG, fg=MUTE, width=12, anchor="e").pack(side="left", padx=(0, 6))
+    return r
+
+# whole-stack controls (gateway + watcher + voice-sweep + status board)
+full = btnrow_with_label("Whole stack")
+mkbtn(full, "▶ Start", GREEN, "start")
+mkbtn(full, "■ Stop", RED, "stop")
+mkbtn(full, "⟳ Restart", "#3a6ea5", "restart")
+
+# gateway-only controls (just the OpenClaw bot daemon)
+gw = btnrow_with_label("Gateway only")
+mkbtn(gw, "▶ Start", GREEN, "gw-start")
+mkbtn(gw, "■ Stop", RED, "gw-stop")
+mkbtn(gw, "⟳ Restart", "#3a6ea5", "gw-restart")
+
+# refresh (own row, not disabled during ops)
+rerow = tk.Frame(root, bg=BG)
+rerow.pack(pady=(6, 2))
+refresh_btn = tk.Button(rerow, text="↻ Refresh status", font=lbl, bg=CARD, fg=FG,
+                        relief="flat", bd=0, padx=12, pady=6, command=kick_status)
+refresh_btn.pack()
 
 # log
 log = scrolledtext.ScrolledText(root, height=10, bg="#141519", fg="#c8ccd4", font=mono,
