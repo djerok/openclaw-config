@@ -102,6 +102,68 @@ async def cmds(interaction: discord.Interaction):
     )
 
 
+@tree.command(name="help", description="Full, detailed reference for every clanker command")
+async def help_cmd(interaction: discord.Interaction):
+    emb = discord.Embed(
+        title="🦞 Clanker — Full Command Reference",
+        description="Three ways to control clanker: **Discord slash commands** (this bot), "
+                    "**Claude's own commands** typed inside a session, and **emoji reactions**.",
+        color=0x5865F2,
+    )
+    emb.add_field(
+        name="🟢 Discord slash commands  (type `/` — autocompletes)",
+        value=(
+            "`/claude` — Spawn a **Claude Code** session in a new thread. The *spawn* is one-time; then "
+            "you talk **in that thread** and it remembers. Re-running starts a fresh session.\n"
+            "`/claude_here` — **Bind this channel** to Claude Code. Afterwards just **type normally** — "
+            "every message goes to Claude, continuously, no command needed. Best for real back-and-forth.\n"
+            "`/ask <prompt>` — Send one prompt to the main assistant. Context carries across calls in the "
+            "same channel (and across plain `clanker …` messages).\n"
+            "`/stop` — Abort the current run (same as the 🛑 reaction).\n"
+            "`/cmds` — Short list.  `/help` — this reference."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🔵 Inside a Claude session  (type as text — no autocomplete)",
+        value=(
+            "Claude Code's own slash commands. Type them as a message in a `/claude` thread or a "
+            "`/claude_here` channel:\n"
+            "`/model <name>` — switch model (e.g. `/model sonnet`).\n"
+            "`/context` — show token / context usage.\n"
+            "`/clear` — clear the conversation.  `/compact` — summarize & compress history.\n"
+            "…plus skill commands (e.g. `/investigate`). Commands that normally open a picker need an "
+            "argument here (no TUI over Discord)."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🟣 Reactions  (click the emoji)",
+        value=(
+            "🛑 — Stop / abort the run (auto-added to your prompts).\n"
+            "🎧 — “heard you” ack on a voice message.\n"
+            "🎤 — the transcript of your voice message.\n"
+            "🔐 ✅ / ❌ — Approve or deny a tool the Claude session wants to run.\n"
+            "❓ 1️⃣–9️⃣ / ❌ — Answer a multiple-choice question from Claude (tap a number, or ❌ to cancel)."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="💡 Tips",
+        value=(
+            "• **One-shot vs ongoing:** `/ask` and `/claude` are triggers — the conversation behind them "
+            "persists. For “just chat”, use `/claude_here`.\n"
+            "• **Wake word:** outside a bound channel, start a message with **clanker** to get the "
+            "assistant's attention.\n"
+            "• Permission 🔐 prompts appear in `approve-reads` mode; multiple-choice ❓ prompts appear "
+            "whenever Claude asks you to pick."
+        ),
+        inline=False,
+    )
+    emb.set_footer(text="clanker · OpenClaw gateway + Claude Code (acpx) · slash bot = clanker-2")
+    await interaction.response.send_message(embed=emb, ephemeral=True)
+
+
 @client.event
 async def on_ready():
     total = 0

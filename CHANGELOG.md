@@ -1529,3 +1529,26 @@ harmless but note before the clean reinstall.
   component (registration, bot, gateway, proxy) is verified and the post→execute path is the proven stop-button
   mechanism. **In-thread Claude commands** (`/model`, `/permissions` inside a bound `/acp` thread) — still to be
   verified against what acpx forwards; needs a live Claude session.
+
+### 2026-07-22 (later) — permission ✅/❌ live, multiple-choice bridge, in-session commands, `/help`
+
+- **In-session Claude commands — confirmed by code.** The claude-agent-acp adapter's prompt handler checks
+  `firstText.startsWith("/")` and has a `LOCAL_ONLY_COMMANDS` set (`/context`,`/heapdump`,`/extra-usage`); its
+  own comment notes the SDK handles `/model` etc. So typing `/model sonnet`, `/context`, `/clear` as **text** in
+  a bound `/acp` thread executes as a Claude command. OpenClaw's acpx adds **no** command UI, so they don't get
+  Discord autocomplete — you type them.
+- **Permission ✅/❌ — now LIVE.** The manual-approve runtime patch (`acp_manual_approve_patch.py`, patches
+  `openclaw/dist/runtime-DB8FvL7H.js` `resolveReadOrPromptPermission`) was already applied; flipped acpx
+  `permissionMode` **`approve-all` → `approve-reads`** so non-read tools now hit the patched branch → the
+  stop-watcher posts **🔐 ✅/❌** in the ACP thread and the reaction decides. (Reads still auto-approve.)
+- **Multiple choice — BRIDGE BUILT.** Claude's `AskUserQuestion` → the adapter's `handleAskUserQuestion` builds
+  an ACP form and calls `this.client.unstable_createElicitation`, which OpenClaw doesn't implement (question
+  died). New patch **`acp_elicit_bridge_patch.py`** swaps that call for a file-IPC helper (`~/.openclaw/acp_elicit/`),
+  and `stop_watcher.py` renders the options as **❓ + 1️⃣–9️⃣ reactions (❌ = cancel)**, writing the pick back as
+  `{action:"accept", content:{question_0:<label>}}` — the exact shape `applyAskElicitationResponse` expects.
+  v1 = one question, single-select, ≤9 options. node --check OK; re-apply both patches after `openclaw update`.
+- **`/help`** — new slash command: a rich embed documenting **every** command (Discord slash cmds, in-session
+  Claude cmds, all reactions, tips). Bot now syncs **6** commands.
+- Restarted the stack via the panel; all four moving parts verified up (gateway `approve-reads`, watcher with
+  the elicitation bridge, slash bot, patched adapter). **Still user-gated:** the actual click of a slash command,
+  a 🔐 approve, and a ❓ pick each need a human — every code path is in place and verified.
