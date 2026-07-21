@@ -1500,3 +1500,9 @@ harmless but note before the clean reinstall.
   (`_launch_gateway`/`_kill_gateway`/`_disable_selfheal`/`_wait_up`) and gained `gw-start` / `gw-stop` /
   `gw-restart` (bounce just the OpenClaw bot daemon, leaving watcher + voice-sweep + status board running —
   handy after a config change). GUI now has **two labelled button rows**: *Whole stack* and *Gateway only*.
+- **🚫 No-flash fix** — the GUI runs under `pythonw` (no console), so every `subprocess` call to a console
+  program (`netstat`/`schtasks`/`taskkill`/`powershell`) popped a console window — and the status poll runs
+  every 4 s, so windows kept flashing constantly. Fixed: all children in `clanker_control.py` now spawn with
+  **`CREATE_NO_WINDOW`** (via a `_run()` wrapper; the gateway launch already had it). Verified the four
+  Scheduled Tasks already use windowless interpreters (`pythonw`/`python3w`/`wscript`) and that `status_board`
+  + `whisper_router` already flag their own subprocesses — so the GUI poll was the sole source.

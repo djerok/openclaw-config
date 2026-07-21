@@ -3,7 +3,10 @@
   full stack : start | stop | restart   (gateway + watcher + voice-sweep + status board)
   gateway    : gw-start | gw-stop | gw-restart   (just the OpenClaw bot daemon)
 Driven by the Desktop 'Clanker Control.cmd' / clanker_gui.py. The gateway is launched
-DETACHED + HIDDEN with the Kimi env (so it survives the window closing and ACP-claude auths)."""
+DETACHED + HIDDEN with the Kimi env (so it survives the window closing and ACP-claude auths).
+
+Every child process uses CREATE_NO_WINDOW so nothing flashes a console — important because the
+GUI runs under pythonw (no console of its own), so an un-flagged console child pops a window."""
 import json, os, subprocess, sys, time
 
 HOME  = os.path.expanduser("~")
@@ -11,11 +14,16 @@ NODE  = r"C:\Program Files\nodejs\node.exe"
 ENTRY = os.path.join(HOME, "AppData", "Roaming", "npm", "node_modules", "openclaw", "dist", "index.js")
 PORT_GW, PORT_WATCH = 18789, 18790
 AUX_TASKS = ["OpenClaw Stop Watcher", "OpenClaw Voice Privacy Sweep", "OpenClaw Status Board"]
-DETACHED = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW — no console flash
+DETACHED  = 0x00000008 | 0x00000200 | NO_WINDOW  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+
+def _run(args, **kw):
+    kw.setdefault("creationflags", NO_WINDOW)
+    return subprocess.run(args, **kw)
 
 def pid_on_port(port):
     try:
-        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=15).stdout
+        out = _run(["netstat", "-ano"], capture_output=True, text=True, timeout=15).stdout
         for ln in out.splitlines():
             if (":%d " % port) in ln and "LISTENING" in ln:
                 return ln.split()[-1]
@@ -39,7 +47,7 @@ def kimi_env():
     return env
 
 def _task(*args):
-    subprocess.run(["schtasks", *args], capture_output=True, timeout=20)
+    _run(["schtasks", *args], capture_output=True, timeout=20)
 
 # ---- gateway primitives ----
 def _launch_gateway():
@@ -54,16 +62,16 @@ def _launch_gateway():
 def _kill_gateway():
     pid = pid_on_port(PORT_GW)
     if pid:
-        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+        _run(["taskkill", "/F", "/PID", pid], capture_output=True)
         print("  gateway stopped (pid %s)" % pid)
     else:
         print("  gateway not running")
 
 def _disable_selfheal():
     _task("/End", "/TN", "OpenClaw Gateway")
-    subprocess.run(["powershell", "-NoProfile", "-Command",
-                    "Disable-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"],
-                   capture_output=True, timeout=20)
+    _run(["powershell", "-NoProfile", "-Command",
+          "Disable-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"],
+         capture_output=True, timeout=20)
 
 def _wait_up(secs=180):
     print("  waiting for the bot to come online...", flush=True)
@@ -85,7 +93,7 @@ def stop():
     _kill_gateway()
     pid = pid_on_port(PORT_WATCH)
     if pid:
-        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True); print("  stop-watcher stopped (pid %s)" % pid)
+        _run(["taskkill", "/F", "/PID", pid], capture_output=True); print("  stop-watcher stopped (pid %s)" % pid)
     else:
         print("  stop-watcher not running")
     _disable_selfheal()
@@ -113,7 +121,7 @@ def status():
     print("  Discord bot / gateway : %s" % ("UP  (pid %s)  http://127.0.0.1:18789/" % gw if gw else "DOWN"))
     print("  Stop watcher          : %s" % ("UP  (pid %s)" % w if w else "down"))
     for t in AUX_TASKS:
-        r = subprocess.run(["schtasks", "/Query", "/TN", t, "/FO", "LIST"], capture_output=True, text=True)
+        r = _run(["schtasks", "/Query", "/TN", t, "/FO", "LIST"], capture_output=True, text=True)
         print("  %-22s: %s" % (t, "registered" if r.returncode == 0 else "MISSING"))
 
 CMDS = {"start": start, "stop": stop, "restart": restart,
