@@ -1490,3 +1490,9 @@ harmless but note before the clean reinstall.
 - **↩ `/brain` toggle reverted** — the "swap OpenClaw's brain to Claude-Code-CLI-via-Kimi" `/brain` command
   (patched into `message-handler.preflight-*.js`) didn't work and was removed (`node --check` clean). ACP
   (`/acp spawn claude`) remains the way to reach Claude Code from Discord; not worth the patch-maintenance.
+- **🔘 Button GUI** (follow-up, same day) — replaced the number-menu `.cmd` with a real **tkinter panel**
+  (`~/.openclaw/clanker_gui.py`, ships with Python 3.12, no install). Window shows **two live status dots**
+  (Discord bot / stop-watcher, green=up red=down, auto-poll 4 s) and **▶ Start / ■ Stop / ⟳ Restart / ↻ Refresh**
+  buttons that shell out to `clanker_control.py` and stream its output into a log pane. `Clanker Control.cmd`
+  now launches it windowless via `pythonw`. Note: "OpenClaw" here **is** the gateway — Stop kills that node
+  process, so the buttons turn OpenClaw itself on/off. All three scripts versioned in `openclawconfig/launcher/`.
