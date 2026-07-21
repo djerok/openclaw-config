@@ -1283,10 +1283,35 @@ the **verified-live** bundles, each proven with a boot-trace before declaring do
   `channel-feedback-*.js` (the status controller) so a final done/error reaction can't be reverted.
   Durable script: **`~/.openclaw/workspace/tools/checkmark_persist_patch.py`**. (Also flipped
   `messages.statusReactions.enabled:true`.)
-- **🎤 voice — FIXED + CONFIRMED.** Sent a real Discord voice message (opus/ogg + waveform, flags=8192) →
-  clanker transcribed → replied → ✅. Root cause: `[media-understanding] audio: failed reason=ffmpeg not
-  found in trusted system directories`. Fix = placed ffmpeg/ffprobe in `~/.openclaw/ffmpeg/` + ran
-  **`ffmpeg_hardcode_patch.py`** (short-circuits `requireSystemBin("ffmpeg")` to that path).
+- **🎤 voice — the ffmpeg "fix" above was WRONG (Eric: "it absolutely did not"); REAL fix below, now
+  CONFIRMED.** The ffmpeg error was a *different* code path (manual `media` tool), not inbound Discord voice,
+  so the ffmpeg hardcode changed nothing. Chased a second red herring ("unimplemented") by grepping the
+  discord.js *library* bundle. **Real root cause: transcription IS built + wired for Discord** — the discord
+  extension preflight `preflight-audio-*.js` (`loadDiscordPreflightAudioRuntime` → downloads `att.url` from
+  the Discord CDN → `transcribeFirstAudio`), called by `message-handler.preflight-*.js`. It was **gated, not
+  missing**: `needsPreflightTranscription = hasAudio && !hasTypedText && (isDirectMessage ||
+  shouldRequireMention && mentionRegexes.length>0)`. Clanker's channel is `groupPolicy:"open"` ⇒
+  `shouldRequireMention=false`, not a DM ⇒ the gate is false ⇒ **an open channel never transcribes voice.**
+  **Fix = relax the gate** to `(isDirectMessage || !shouldRequireMention || mentionRegexes.length>0)`. Durable
+  patch: **`~/.openclaw/workspace/tools/voice_gate_patch.py`** (globs the gate across hash-renamed bundles,
+  `node --check`, idempotent). **PROVEN** with 3 fresh TTS nonce clips sent as real voice messages (flags=8192
+  + waveform, via new `~/clanker-test/voice_send.py`) → clanker replied "pineapple 🍍", "Velvet Thunder 9",
+  "Scarlet Falcon 7" — content that existed only in the audio. (`inferAudioAttachmentMime` already detects
+  Discord voice via `duration_secs`/`waveform`.)
+- **🧹 voice privacy cleanup — Eric: "delete afterwards the transcript and the audio".** OpenClaw does NOT
+  auto-delete inbound voice: it saves every one to `~/.openclaw/media/inbound/*.ogg` (+ workspace
+  `openclaw-staged-*`) and keeps it ~30 min for history reference (hardcoded TTL). Transcription reads the CDN
+  url, not that saved copy, so deleting it is safe. Two-part: (1) `voice_gate_patch.py` patch 2 adds a
+  `finally{ unlink(fileOutput) }` in `runner.entries-*.js` `resolveCliOutput` so the whisper `-otxt`
+  transcript `.txt` is removed after read (was leaking); (2) **`~/.openclaw/workspace/tools/
+  voice_privacy_sweep.py`** + Windows Scheduled Task **"OpenClaw Voice Privacy Sweep"** (every 1 min) deletes
+  audio + `.txt` in the two inbound dirs older than 180 s (>worst-case turn; images untouched). Verified it
+  swept 4 lingering recordings (incl Eric's own) and each test clip within ~3 min.
+- **⚠️ gateway slowness / flaky delivery (separate, pre-existing).** `start_clanker.cmd` sets
+  `NODE_DISABLE_COMPILE_CACHE=1` (leftover from the debunked stale-dist theory) → full recompile every boot
+  (~3 min) and a CPU-bound process → event-loop stalls → Discord "heartbeat ACK timeout" → websocket
+  zombie/reconnect → replies delayed (one nonce took ~5 min, delivered after reconnect). Removing that flag
+  should speed boot and stabilize delivery. Not changed on the running process this session.
 - **🛑 stop — DEFERRED (Eric shipped the 2).** The live Discord plugin *receives* reactions (intent on) but
   wires **no handler** for them; the prior patch's handler bundle never loads, so a 🛑 reaction never
   reaches the gateway. Viable path (Eric's idea): external watcher polls Discord for 🛑 → fires a stop
@@ -1309,3 +1334,159 @@ runs as a direct process (not the Task) — survives until this machine/session 
 session: `channels.discord.allowBots:true`, `allowFrom` += test-bot id, `messages.statusReactions.enabled:true`.
 `gateway.vbs`/`gateway.cmd`/the Task action were edited during debugging (blocking wscript, log redirect) —
 harmless but note before the clean reinstall.
+
+### 2026-07-21 (late night 2) — human voice ignored (mention gate) + CPU cleanup
+
+- **FIXED: your own voice messages were ignored, the test bot's worked.** Root cause:
+  `resolveDiscordShouldRequireMention` defaults to **TRUE** for guild messages
+  (`channelConfig?.requireMention ?? guildInfo?.requireMention ?? true`), so clanker needs an @mention from
+  humans. Your TEXT works because you @mention/reply clanker; a **voice message has no text so it can never
+  contain a mention** → dropped. The test bot bypasses the whole gate via `allowBots: true` (= "all" mode).
+  Fix: set **`channels.discord.guilds["1527763934508089446"].requireMention = false`** (guild-level — the top
+  `channels.discord.requireMention` is schema-INVALID and silently skips the whole config reload; must be
+  under `guilds.<id>` or `channels.<id>`). Gateway restarted (with Kimi env re-injected) to load it. Effect:
+  clanker now answers ALL human messages in that guild without a mention (voice + text). If too chatty,
+  alternative = surgical patch so only voice bypasses the mention.
+- **CPU cleanup:** killed 6 orphaned `claude-agent-acp` node harnesses left by ACP testing (node procs 25→17).
+  Whisper confirmed on GPU (`route=large/GPU`); gateway + watcher are I/O-bound (Kimi API + Discord polling),
+  nothing else is GPU-offloadable. clanker/ACP inference is remote (Kimi API), not local.
+
+### 2026-07-21 (late night) — ACP Claude Code: auth FIXED (Kimi) + stop/listening now WORK
+
+- **ACP claude 401 FIXED — routed to Kimi.** Root cause chain: acpx strips provider-auth env from the harness
+  → harness auths via `~/.claude` → `.credentials.json` (real-Anthropic OAuth) overrode the Kimi settings → 401.
+  Fix (Eric: "move ACP to claude-kimi"): `claude_auth_switch.py kimi` (settings.json → Kimi) + **backed up and
+  renamed `~/.claude/.credentials.json` → `.credentials.json.disabled-for-kimi-acp`** (backup in
+  `~/.claude/backups/`). ACP claude then authenticated: `🤖 claude | AUTH OK via kimi`. **SIDE EFFECT: Eric's
+  own Claude Code CLI is now Kimi-only** until he restores the credential / re-logs in ("figure out claude code
+  later"). Kimi token verified valid independently (direct /v1/messages → 200).
+- **🛑 stop + 🎧 listening now reach ACP Claude Code sessions.** stop_watcher `text_channels()` now also polls
+  `/guilds/{g}/threads/active` (ACP `--thread auto` runs in a `🤖 claude` thread; `--bind here` runs in the
+  channel). Confirmed: `/stop` aborts a live ACP run (`Got it. Stopping here.` → `⚙️ Agent was aborted.`), and a
+  🛑 reaction in the ACP thread → watcher `/stop` → **aborted an ACP essay mid-stream**. Watcher polling
+  parallelized (ThreadPoolExecutor, 10 workers) so many channels+threads don't slow the cycle and let fast runs
+  finish before `/stop` lands. Spawn gotcha: `/acp spawn claude --cwd <path>` splits on the path — omit `--cwd`.
+- **Remaining ACP TODO:** permission approve/deny UI. acpx `nonInteractivePermissions: deny` means non-read
+  tools are silently denied without an interactive Discord prompt (unbuilt). That's the last piece for full
+  Claude-Code-over-Discord.
+
+### 2026-07-21 (night) — transcript echo + ACP-scope findings + gateway keeps dying
+
+- **🎤 transcript echo before thinking** (Eric: "output the transcription in text before it starts to
+  think"). The config `tools.media.audio.echoTranscript` exists but is ONLY wired into the media-*tool*
+  path — Discord's inbound-voice `preflight-audio-*.js` never calls it, so the config is a no-op for
+  Discord voice. Bridged in our own components instead: `whisper_router.py` appends each transcript to
+  `~/.openclaw/voice_echo/transcripts.jsonl`; `stop_watcher.py` FIFO-matches new transcripts to the voice
+  messages it 🎧'd and posts `🎤 "<transcript>"` as a reply. Freshness guard (only queue voice msgs <25s
+  old) prevents FIFO misalignment after a watcher restart. Verified: echo posts with the correct text,
+  BEFORE clanker's reply.
+- **ACP UPDATE (tested in claude-agi3-zixuan): watcher now thread-aware; ACP claude itself is 401-broken.**
+  - **Thread-aware watcher DONE + confirmed:** `text_channels()` now also polls `/guilds/{g}/threads/active`,
+    so 🎧/🛑/🎤-echo reach ACP sessions spawned with `--thread auto` (which run in a `🤖 claude` thread).
+    Verified: a message in the ACP thread got 🛑 seeded. `--bind here` sessions run in the channel and were
+    already covered.
+  - **BLOCKER — ACP claude can't authenticate:** every `/acp spawn claude` turn dies with
+    `Failed to authenticate. API Error: 401` / `ACP_TURN_FAILED`. Root cause: the acpx claude harness inherits
+    `~/.claude/settings.json`, which currently has **ANTHROPIC_BASE_URL unset (→ real Anthropic), model=fable,
+    no auth token** — i.e. Claude Code's global auth is pointed at the real Anthropic sub with invalid/expired
+    OAuth, NOT Kimi. So there is no working ACP run to /stop and no permission prompt ever fires.
+  - **Consequence:** verifying /stop aborts an ACP run + building the permission approve/deny UI are BLOCKED
+    until ACP claude auth is fixed (route Claude Code to Kimi, which is how ACP is meant to run — a global
+    Claude Code auth change, so left for Eric to decide). Spawn syntax gotcha: `--cwd <path>` gets split by the
+    arg parser (both slash styles) — omit it; acpx defaults to `~/.openclaw/workspace`.
+- **ACP (Claude Code) sessions — the new features mostly DON'T reach them (investigated, not extended).**
+  Everything built this session targets the main clanker/kimi path. For `/acp spawn claude` sessions:
+  (1) **listening/🎧/echo** — likely carries over (transcription + 🎧 are channel-ingress level, and there's
+  a `dispatch-acp-media.runtime`), but UNTESTED with a live ACP session. (2) **🛑 stop** — the watcher polls
+  text channels (type 0/5) NOT threads, and ACP sessions typically bind to a thread → the 🛑 won't appear
+  there; also `/stop` reaching an ACP run is untested (ACP shares abortSignal/runId infra, so it *might*).
+  (3) **permissions** — ACP tool approvals go through `resolvePermissionRequest`→`promptUserPermission`
+  (CLI prompt), and the Discord approve/deny UI is a known UNBUILT item. So ACP permission prompts are not
+  surfaced interactively in Discord. Net: to make stop/permissions work for Claude Code sessions is real
+  additional work (thread-aware watcher + ACP-run abort test + a Discord permission UI).
+- **⚠️ gateway keeps dying.** The gateway runs as a foreground process inside the Claude session; when that
+  session churns/exits, the gateway dies and clanker goes silent (happened again — "it didn't reply").
+  Restarted (boot ~108s). Root fix is still the sandbox-ACL reinstall so the Scheduled Task can own it.
+
+### 2026-07-21 (evening) — edit-in-place streaming + instant 🎧 voice feedback
+
+- **✍️ streaming = edit-in-place.** Discord was posting complete chunks as separate messages. Set
+  **`channels.discord.streaming = {"mode":"partial"}`** (openclaw.json) — OpenClaw now EDITS a message as
+  tokens arrive (`discordStreamMode==="partial"` in message-handler.process tracks `lastPartialText`). Hot-
+  reloaded (no restart). Verified: one msg grew via edits `len 234→615→731→1856`; long replies still span
+  multiple messages only because of Discord's 2000-char cap, each streamed by editing. Modes:
+  off / partial / block(old default) / progress.
+- **🎧 instant voice feedback.** Voice DOES work (confirmed repeatedly: 👀→🧠→✅ + correct reply, whisper
+  ~4s on GPU) — but the 👀 ack only fires AFTER whisper transcribes (~12-14s), so a voice message looked
+  ignored for 10-15s ("doesn't react like it does"). `stop_watcher.py` now adds a **🎧 "heard you"** reaction
+  to any voice message immediately (before the transcription-delayed 👀), and removes it (with the 🛑) when the
+  prompt gets ✅/❌. Verified: 🎧 in ~9s, reply "The secret code word is pineapple" in ~15s, clean finish
+  (🎧/🛑 gone, ✅ remains). If voice still seems dead it's transient kimi API errors, not transcription.
+
+### 2026-07-21 (later) — voice really fixed, whisper GPU/CPU, gateway un-throttled, 🛑 stop button
+
+- **🎤 voice — root cause was a GATE, not ffmpeg (corrected above); now proven with 3 fresh TTS nonces**
+  (clanker echoed "pineapple 🍍", "Velvet Thunder 9", "Scarlet Falcon 7" — each only in the audio). Fix =
+  relax the discord audio-preflight gate for open channels. Durable: `voice_gate_patch.py`.
+- **🧹 voice privacy** (Eric: "delete the transcript and the audio afterwards"). OpenClaw keeps inbound voice
+  in `~/.openclaw/media/inbound/` ~30 min; transcription reads the CDN url not that copy, so deleting it is
+  safe. `voice_gate_patch.py` patch-2 unlinks the whisper `-otxt` `.txt`; **`voice_privacy_sweep.py`** +
+  Task **"OpenClaw Voice Privacy Sweep"** (`/SC MINUTE`) deletes audio+`.txt` >180s old from the inbound dirs.
+- **🎧 whisper router — GPU-if-free-else-CPU** (Eric's ask). `~/.openclaw/whisper/whisper_router.py` already
+  routed by live GPU/CPU load (RTX 5070, cuBLAS build); simplified `pick()` to: GPU when util <85%, else CPU,
+  **never** the Discord fallback. Verified `route=large/GPU`.
+- **⚡ gateway un-throttled.** Removed `NODE_DISABLE_COMPILE_CACHE=1` from `start_clanker.cmd` (leftover from
+  the debunked stale-dist theory). It forced a full recompile every boot and stalled the event loop ~23s
+  mid-run (`eventLoopDelayP99Ms=23270`), which delayed replies AND made `/stop` miss its window. Now responsive.
+- **🛑 STOP BUTTON — BUILT + CONFIRMED.** The live plugin ignores inbound reactions, so bridged via an external
+  watcher: **`~/.openclaw/workspace/tools/stop_watcher.py`** + Task **"OpenClaw Stop Watcher"** (`/SC MINUTE`,
+  pythonw hidden, self-healing, single-instance port-lock). It **seeds 🛑 on every prompt**, on a **human
+  click** posts **`/stop`** (the working text-abort trigger) to abort, and **removes the 🛑** when the prompt
+  gets a terminal ✅/❌ status reaction. Auto-deletes its `/stop` message; recency guard (600s) stops stale
+  re-fires. **Key gotcha:** `/stop` only aborts when it comes from an `allowFrom` sender — clanker's own id is
+  NOT in allowFrom, so the watcher posts `/stop` as **"clanker 2" (TEST_BOT_TOKEN, which IS in allowFrom)**.
+  ⇒ the stop feature now DEPENDS on clanker 2 staying in the guild+allowFrom. End-to-end test:
+  `~/clanker-test/test_stop_v2.py` → seeded 🛑 in 3s, click → `aborted=True`, 🛑 removed. Cleaner long-term
+  path (no bot dependency): wire the gateway control API `chat.abort` (per-run AbortController registry in
+  `chat-abort-*.js`) — not built.
+
+### 2026-07-21 (very late) — MANUAL per-action approve for ACP (build + wake-word variations)
+
+- **🔐 Manual approve/deny for ACP tools — BUILT.** acpx only ships approve-all/approve-reads/deny-all (no
+  per-action prompt) because the permission event fires headless. Bridged it: `acp_manual_approve_patch.py`
+  patches the embedded runtime (`runtime-*.js` `resolveReadOrPromptPermission`) so the headless auto-DENY
+  branch instead calls a helper that writes a pending file to `~/.openclaw/acp_perms/pending/` and block-polls
+  `decided/` (90s). `stop_watcher.py` sees the pending file, posts **"🔐 clanker wants to run `<tool>` — ✅/❌"**
+  to the active ACP thread (tracked via the `🤖 claude` author), reads your reaction, writes the decision.
+  VERIFIED the Discord half end-to-end (simulated pending → prompt → ✅ → `decided={"allow":true}`). permissionMode
+  set back to **approve-reads** (reads auto, everything else prompts). Re-apply the patch after `openclaw update`.
+  Couldn't drive the harness half via the test bot (only Eric can bind a session; auto-threads hard to target) —
+  needs Eric to confirm in a real session. Correlation caveat: assumes one active ACP session at a time.
+- **🗣 wake-word variations** — mentionPatterns now cover clanker/clunker/blanker/glanker/claw/glaw/openclaw/
+  openclock via 3 regexes; verified matches vs rejects (glow/blow/black stay quiet).
+- **acpx test-session cleanup** — killed orphaned `claude-agent-acp` node processes (they pile up per spawn).
+
+### 2026-07-21 (final) — one-click Start/Stop launcher + resource accounting + headless cleanup
+
+- **🖱 Desktop launcher — `C:\Users\ericc\Desktop\Clanker Control.cmd`.** Double-click menu (START / STOP /
+  STATUS / RESTART) for the whole clanker stack. Drives **`~/.openclaw/clanker_control.py`**, which:
+  - **START** — launches the gateway **detached + hidden** (`DETACHED_PROCESS|NEW_PROCESS_GROUP|NO_WINDOW`)
+    with the **Kimi env pulled from `~/.claude/settings.json`** (so ACP-claude authenticates and the bot
+    survives the launcher window closing), then `schtasks /Run` for the watcher + voice-sweep + status board,
+    then waits (≤3 min) for port 18789 to bind.
+  - **STOP** — kills the gateway (PID on :18789) + stop-watcher (PID on :18790), **disables the "OpenClaw
+    Gateway" self-heal task** (else it retries every 5 min), and ends the aux tasks.
+  - **STATUS** — reports gateway/watcher up-or-down + task registration.
+  - Note: a `.cmd` is the practical Windows "exe" here (double-clickable, no build step); it calls the
+    known-good Python 3.12 interpreter directly since bare `python` is a 0-byte stub on this PC.
+- **📊 Resource accounting** (measured, steady-state RAM; clanker only, excludes this machine's VS Code/MCP node):
+  gateway **~436 MB** · stop-watcher **~21 MB** · status board **~21 MB** · Discord socks bridge **~14 MB**
+  ⇒ **≈490 MB resident**. CPU is **near-idle** (event loop + 3–5 s polls); the only real burst is **whisper**
+  on a voice message (**GPU if free**, ~1–4 s, else CPU). Whisper is **local = $0**. The one variable cost is
+  **Kimi API tokens** — every clanker reply and every ACP-claude turn bills the Kimi Code subscription
+  (no per-message Anthropic charge, since ACP is routed to Kimi). Disk: faster-whisper model (~1.5 GB) + logs.
+- **🧹 Headless / efficiency** — `whisper-cli.cmd` now calls **`pythonw.exe`** (windowless, no console flash per
+  transcription); the voice-privacy sweep runs windowless; watcher poll relaxed to 3 s. No more popup spam.
+- **↩ `/brain` toggle reverted** — the "swap OpenClaw's brain to Claude-Code-CLI-via-Kimi" `/brain` command
+  (patched into `message-handler.preflight-*.js`) didn't work and was removed (`node --check` clean). ACP
+  (`/acp spawn claude`) remains the way to reach Claude Code from Discord; not worth the patch-maintenance.

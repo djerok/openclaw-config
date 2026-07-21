@@ -10,6 +10,20 @@ There are **two independent Scheduled Tasks**:
 
 ---
 
+## Easiest: the Desktop launcher
+
+**`C:\Users\ericc\Desktop\Clanker Control.cmd`** — double-click for a menu:
+**START / STOP / STATUS / RESTART** the *entire* stack (gateway + stop-watcher +
+voice-privacy sweep + status board) in one place. It drives
+`~/.openclaw/clanker_control.py`, which launches the gateway **detached + hidden
+with the Kimi env** (so ACP-claude authenticates and the bot outlives the window),
+and on STOP disables the 5-min self-heal so it stays down.
+
+Prefer this for everyday start/stop. The manual commands below are the fallback /
+for individual pieces.
+
+---
+
 ## OpenClaw Gateway (the bot / agent)
 
 ### Start / turn ON
