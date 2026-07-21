@@ -12,7 +12,9 @@ import json, os, subprocess, sys, time
 HOME  = os.path.expanduser("~")
 NODE  = r"C:\Program Files\nodejs\node.exe"
 ENTRY = os.path.join(HOME, "AppData", "Roaming", "npm", "node_modules", "openclaw", "dist", "index.js")
-PORT_GW, PORT_WATCH = 18789, 18790
+PORT_GW, PORT_WATCH, PORT_SLASH = 18789, 18790, 18791
+PYW = r"C:\Users\ericc\AppData\Local\Programs\Python\Python312\pythonw.exe"
+SLASH_BOT = os.path.join(HOME, ".openclaw", "workspace", "tools", "slash_bot.py")
 AUX_TASKS = ["OpenClaw Stop Watcher", "OpenClaw Voice Privacy Sweep", "OpenClaw Status Board"]
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW — no console flash
 DETACHED  = 0x00000008 | 0x00000200 | NO_WINDOW  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
@@ -73,6 +75,21 @@ def _disable_selfheal():
           "Disable-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"],
          capture_output=True, timeout=20)
 
+def _launch_slash_bot():
+    if pid_on_port(PORT_SLASH):
+        print("  slash-command bot already up (pid %s)" % pid_on_port(PORT_SLASH)); return
+    py = PYW if os.path.exists(PYW) else "pythonw"
+    subprocess.Popen([py, SLASH_BOT], creationflags=DETACHED, close_fds=True,
+                     cwd=os.path.join(HOME, ".openclaw"))
+    print("  slash-command bot launching (clanker-2)...")
+
+def _kill_slash_bot():
+    pid = pid_on_port(PORT_SLASH)
+    if pid:
+        _run(["taskkill", "/F", "/PID", pid], capture_output=True); print("  slash-command bot stopped (pid %s)" % pid)
+    else:
+        print("  slash-command bot not running")
+
 def _wait_up(secs=180):
     print("  waiting for the bot to come online...", flush=True)
     for _ in range(secs // 2):
@@ -87,6 +104,7 @@ def start():
     for t in AUX_TASKS:
         _task("/Run", "/TN", t)
     print("  watcher + voice-sweep + status board started")
+    _launch_slash_bot()
     _wait_up()
 
 def stop():
@@ -96,6 +114,7 @@ def stop():
         _run(["taskkill", "/F", "/PID", pid], capture_output=True); print("  stop-watcher stopped (pid %s)" % pid)
     else:
         print("  stop-watcher not running")
+    _kill_slash_bot()
     _disable_selfheal()
     for t in AUX_TASKS:
         _task("/End", "/TN", t)
@@ -120,6 +139,8 @@ def status():
     gw = pid_on_port(PORT_GW); w = pid_on_port(PORT_WATCH)
     print("  Discord bot / gateway : %s" % ("UP  (pid %s)  http://127.0.0.1:18789/" % gw if gw else "DOWN"))
     print("  Stop watcher          : %s" % ("UP  (pid %s)" % w if w else "down"))
+    sb = pid_on_port(PORT_SLASH)
+    print("  Slash-command bot     : %s" % ("UP  (pid %s)" % sb if sb else "down"))
     for t in AUX_TASKS:
         r = _run(["schtasks", "/Query", "/TN", t, "/FO", "LIST"], capture_output=True, text=True)
         print("  %-22s: %s" % (t, "registered" if r.returncode == 0 else "MISSING"))

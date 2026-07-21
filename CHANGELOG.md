@@ -1506,3 +1506,26 @@ harmless but note before the clean reinstall.
   **`CREATE_NO_WINDOW`** (via a `_run()` wrapper; the gateway launch already had it). Verified the four
   Scheduled Tasks already use windowless interpreters (`pythonw`/`python3w`/`wscript`) and that `status_board`
   + `whisper_router` already flag their own subprocesses — so the GUI poll was the sole source.
+
+## 2026-07-22 — Discord slash commands (`/claude`, `/ask`, `/stop`, …) via the clanker-2 bot
+
+- **Why a separate bot:** slash-command *interactions* arrive over a Discord **gateway WebSocket**, not the
+  REST polling the stop-watcher uses — and OpenClaw owns clanker's connection for messages and doesn't handle
+  interactions. So the clean design is to host the `/` commands on the **"clanker 2"** identity (its own
+  WebSocket, already allow-listed by OpenClaw).
+- **`~/.openclaw/workspace/tools/slash_bot.py`** (discord.py 2.7.1, installed this session). Registers guild
+  slash commands and on each one **posts the equivalent text command**, which OpenClaw then executes:
+  `/claude`→`/acp spawn claude`, `/claude_here`→`/acp spawn claude --bind here`, `/ask <p>`→`clanker <p>`,
+  `/stop`→`/stop`, `/cmds`→help. Slash commands need only `applications.commands` + default intents (no
+  Message Content intent). **Verified:** connected as `clanker 2#6026`, **synced 5 commands** to guild
+  `clanker club's cave`. clanker-2 already had the scope — no re-invite.
+- **Proxy is mandatory:** direct Discord = `WinError 121`. discord.py's `proxy=` kwarg routes REST **and** the
+  gateway WS through the existing `http://127.0.0.1:7994` bridge (→ SOCKS5h UniClash :7993), same path as the
+  watcher/gateway.
+- **Button-managed + headless:** single-instance **port lock on 18791**, pythonw-safe (stdout guard), launched
+  detached with `CREATE_NO_WINDOW`. Wired into `clanker_control.py` (`start` launches it, `stop` kills it,
+  `status` shows it). Not a Scheduled Task — consistent with button-only control (no autostart).
+- **Limits:** a bot cannot invoke its own slash commands via API, so the final *click*-test is the user's; every
+  component (registration, bot, gateway, proxy) is verified and the post→execute path is the proven stop-button
+  mechanism. **In-thread Claude commands** (`/model`, `/permissions` inside a bound `/acp` thread) — still to be
+  verified against what acpx forwards; needs a live Claude session.
